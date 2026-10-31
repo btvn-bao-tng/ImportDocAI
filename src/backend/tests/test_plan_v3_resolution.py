@@ -483,6 +483,67 @@ async def test_per_tariff_item_merges_same_hs_rows_with_summed_amounts(session):
     assert _plan(report, "goods.1.quantity_1")["value"] == "92.92", "46.46 + 46.46"
     assert _plan(report, "goods.1.invoice_amount")["value"] == "23230", "11615 + 11615"
     assert _plan(report, "goods.1.quantity_1")["method"] == "CALCULATED"
+    assert _plan(report, "goods.1.quantity_1")["state"] == "RESOLVED"
+
+
+async def test_merged_quantity_with_disagreeing_units_needs_review(session):
+    """Summing quantities expressed in different units is not a quantity of anything."""
+    shipment, _ = await _taeda_shipment(session, conflict_vessel=False)
+    unit = (
+        await session.execute(
+            select(ExtractedField).where(
+                ExtractedField.field_key == "line.unit", ExtractedField.normalized_value == "CBM"
+            )
+        )
+    ).scalars().first()
+    unit.normalized_value = "KG"
+    await session.flush()
+
+    report = await resolve_shipment(
+        session, shipment.id, "tokhai_import_v1", None, group_policy="PER_TARIFF_ITEM"
+    )
+    quantity = _plan(report, "goods.1.quantity_1")
+    assert quantity["state"] == "NEEDS_REVIEW"
+    assert "different units" in (quantity["reason"] or "")
+    assert _plan(report, "goods.1.quantity_1_unit")["state"] == "AMBIGUOUS"
+
+
+async def test_merged_sum_with_a_missing_source_row_needs_review(session):
+    """A partial sum would understate the declaration: show it, but flag it."""
+    shipment, _ = await _taeda_shipment(session, conflict_vessel=False)
+    amount = (
+        await session.execute(
+            select(ExtractedField).where(ExtractedField.field_key == "line.amount")
+        )
+    ).scalars().first()
+    await session.delete(amount)
+    await session.flush()
+
+    report = await resolve_shipment(
+        session, shipment.id, "tokhai_import_v1", None, group_policy="PER_TARIFF_ITEM"
+    )
+    invoice_amount = _plan(report, "goods.1.invoice_amount")
+    assert invoice_amount["state"] == "NEEDS_REVIEW"
+    assert "row lacks line.amount" in (invoice_amount["reason"] or "")
+
+
+async def test_merged_sum_with_an_unparseable_source_value_needs_review(session):
+    """A value the LineItem mirror cannot parse must not count toward a final sum."""
+    shipment, _ = await _taeda_shipment(session, conflict_vessel=False)
+    amount = (
+        await session.execute(
+            select(ExtractedField).where(ExtractedField.field_key == "line.amount")
+        )
+    ).scalars().first()
+    amount.normalized_value = "FOC"
+    await session.flush()
+
+    report = await resolve_shipment(
+        session, shipment.id, "tokhai_import_v1", None, group_policy="PER_TARIFF_ITEM"
+    )
+    invoice_amount = _plan(report, "goods.1.invoice_amount")
+    assert invoice_amount["state"] == "NEEDS_REVIEW"
+    assert "could not parse" in (invoice_amount["reason"] or "")
 
 
 class ListReplyLLM:
@@ -523,6 +584,68 @@ async def test_patch_without_value_does_not_confirm_a_field(session):
     )
     assert row.review_status == "UNREVIEWED"
     assert row.value == "52312", "a null patch must not clear or confirm the value"
+    assert row.state == "RESOLVED" and row.resolution_method == "DIRECT", (
+        "a note-only patch must not recompute the state or claim the value as user-edited"
+    )
 
     payload = await build_new_draft_payload(session, shipment.id, "tokhai_import_v1")
     assert "declaration.gross_weight" in payload.unreviewed_critical()
+
+
+async def test_goods_rows_without_sources_are_blanked_on_reresolution(session, tmp_path):
+    """Stale numbered goods rows must not keep printing in a NEW_DRAFT.
+
+    Re-extraction (or a different grouping policy) can leave fewer goods rows; the
+    system-owned rows that no longer have a source are blanked, while a human decision
+    on such a row is preserved for the reviewer.
+    """
+    shipment, docs = await _taeda_shipment(session, conflict_vessel=False)
+    await resolve_shipment(session, shipment.id, "tokhai_import_v1", None)
+
+    # Simulate a re-extraction that only produced one container row.
+    from sqlalchemy import delete as sa_delete
+
+    second = (
+        await session.execute(select(LineItem).where(LineItem.seq == 2, LineItem.document_id == docs["invoice"].id))
+    ).scalars().one()
+    await session.execute(sa_delete(ExtractedField).where(ExtractedField.line_item_id == second.id))
+    await session.delete(second)
+    await session.flush()
+
+    report = await resolve_shipment(session, shipment.id, "tokhai_import_v1", None)
+    assert report.goods_rows == 1
+    rows = {r.target_key: r for r in await _rows(session, shipment.id)}
+    assert rows["goods.2.hs_code"].value is None, "system-owned orphan must be blanked"
+    assert rows["goods.2.hs_code"].state == "MISSING"
+    assert rows["goods.1.hs_code"].value == "44071100", "surviving rows keep their values"
+
+    payload = await build_new_draft_payload(session, shipment.id, "tokhai_import_v1")
+    assert len([row for row in payload.goods if any(v for k, v in row.items() if k != "taxes")]) == 1
+
+    # The blanked row must not consume a printed line block or inflate the count.
+    outcome = write_tokhai_export("ORPHAN-GOODS", payload, export_dir=tmp_path)
+    wb = load_workbook(outcome.output_path)
+    assert wb["TKN"]["AF75"].value == "1", "AF75 counts only rows with values"
+    assert not [w for w in outcome.warnings if "Round-trip lệch" in w], (
+        "the round-trip self-check must not report phantom corruption for blanked buckets"
+    )
+
+    # A human decision on the orphaned row is still possible and still survives.
+    await set_resolved_field(
+        session, shipment.id, "goods.2.description", "GIỮ NGUYÊN",
+        template_version="tokhai_import_v1", reason="người dùng đã sửa",
+    )
+    await resolve_shipment(session, shipment.id, "tokhai_import_v1", None)
+    rows = {r.target_key: r for r in await _rows(session, shipment.id)}
+    assert rows["goods.2.description"].value == "GIỮ NGUYÊN"
+
+
+async def _rows(session, shipment_id):
+    return (
+        await session.execute(
+            select(ResolvedField).where(
+                ResolvedField.shipment_id == shipment_id,
+                ResolvedField.template_version == "tokhai_import_v1",
+            )
+        )
+    ).scalars().all()

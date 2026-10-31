@@ -381,17 +381,67 @@ def _goods_plans(snapshot: Snapshot, catalog: TargetCatalog, policy: str) -> lis
             if merged_count > 1 and target.key in MERGED_SUM_FIELDS:
                 summed = item.amount if target.key == "goods.invoice_amount" else item.quantity
                 if summed is not None:
+                    source_key = "line.amount" if target.key == "goods.invoice_amount" else "line.quantity"
+
+                    def _source_value(f: ExtractedField):
+                        # The LineItem mirror the sum comes from parses normalized_value
+                        # only (`pipeline._dec`); the guard must judge exactly that
+                        # value or a row could count as present yet contribute nothing.
+                        return f.normalized_value
+
+                    def _parses(value) -> bool:
+                        try:
+                            parsed = Decimal(str(value).strip()) if value is not None else None
+                        except Exception:
+                            return False
+                        # Decimal() accepts "NaN"/"Infinity" spellings; those are never
+                        # quantities and would poison the sum.
+                        return parsed is not None and parsed.is_finite()
+
+                    present = [
+                        f
+                        for f in fields
+                        if f.field_key == source_key and _source_value(f) not in (None, "", "None")
+                    ]
+                    parseable = [f for f in present if _parses(_source_value(f))]
+                    units = {
+                        str(_source_value(f) or "").strip()
+                        for f in fields
+                        if f.field_key == "line.unit" and str(_source_value(f) or "").strip()
+                    }
+                    notes: list[str] = []
+                    state = "RESOLVED"
+                    if len(present) != merged_count:
+                        # A partial sum would understate the declaration: show it, but
+                        # flag it instead of presenting an incomplete total as final.
+                        state = "NEEDS_REVIEW"
+                        missing = merged_count - len(present)
+                        notes.append(
+                            f"{missing} merged row{'s' if missing != 1 else ''} lack{'s' if missing == 1 else ''} {source_key}"
+                        )
+                    if len(parseable) != len(present):
+                        state = "NEEDS_REVIEW"
+                        unparseable = [str(_source_value(f)) for f in present if not _parses(_source_value(f))]
+                        notes.append("could not parse as a number: " + ", ".join(unparseable))
+                    if target.key != "goods.invoice_amount" and len(units) > 1:
+                        # Summing quantities expressed in different units is not a
+                        # quantity of anything; the reviewer must pick the unit family.
+                        state = "NEEDS_REVIEW"
+                        notes.append("merged rows use different units: " + ", ".join(sorted(units)))
                     ordered = sorted(candidates, key=lambda c: c.priority)
                     plan = FieldPlan(
                         target_key=f"goods.{seq}.{attr}",
                         value=_format_decimal(summed),
-                        state="RESOLVED",
+                        state=state,
                         origin=ORIGIN_DERIVED,
                         document_role=ROLE_BUSINESS_INPUT,
                         method="CALCULATED",
                         primary=ordered[0] if ordered else None,
                         supporting=ordered[1:],
-                        reason=f"sum of {merged_count} merged invoice rows",
+                        reason="sum of "
+                        + str(merged_count)
+                        + " merged invoice rows"
+                        + (("; " + "; ".join(notes)) if notes else ""),
                     )
             plan.target_key = f"goods.{seq}.{attr}"
             plans.append(plan)
@@ -629,6 +679,23 @@ async def persist_if_snapshot_current(
         row.source_snapshot_hash = snapshot.hash
         row.updated_at = _now()
         await _replace_evidence(session, row, snapshot, plan)
+
+    # Numbered goods rows whose source rows no longer exist (re-extraction with fewer
+    # rows, or a different grouping policy) must not keep printing stale values in a
+    # NEW_DRAFT: blank every system-owned row outside the current plan set. Rows a
+    # human edited or confirmed are left for the reviewer, as everywhere else.
+    for key, row in existing.items():
+        if key in plans or not key.startswith("goods.") or row.review_status in MANUAL_STATUSES:
+            continue
+        row.value = None
+        row.state = "MISSING"
+        row.resolution_method = "DIRECT"
+        row.review_status = "UNREVIEWED"
+        row.source_snapshot_hash = snapshot.hash
+        row.updated_at = _now()
+        await session.execute(
+            delete(DeclarationFieldSource).where(DeclarationFieldSource.resolved_field_id == row.id)
+        )
     await session.flush()
     return True, "ok"
 
@@ -894,26 +961,34 @@ async def set_resolved_field(
     if expected_revision is not None and (row.revision or 1) != expected_revision:
         raise RevisionConflict(f"revision {expected_revision} != current {row.revision}")
     old_value = row.value
-    # A null value with no confirm is a note-only patch: the value is left untouched
-    # (send "" to clear) so recording a reason can never wipe the resolved value.
+    # A null value with no confirm is a note-only patch: the value, the state, the
+    # resolution method and the review status are all left untouched (send "" to
+    # clear) so recording a reason can never wipe the resolved value or silently
+    # flip an AMBIGUOUS/NEEDS_REVIEW row to RESOLVED.
     if value is not None:
         row.value = value
-    row.state = "RESOLVED" if row.value not in (None, "") else "MISSING"
-    row.origin = ORIGIN_INPUT_DERIVED
-    row.document_role = ROLE_BUSINESS_INPUT
-    row.resolution_method = "USER_EDITED"
-    row.resolved_by = actor
-    if confirm:
-        row.review_status = "CONFIRMED"
-    elif value is not None:
+        row.state = "RESOLVED" if row.value not in (None, "") else "MISSING"
+        row.origin = ORIGIN_INPUT_DERIVED
+        row.document_role = ROLE_BUSINESS_INPUT
+        row.resolution_method = "USER_EDITED"
+        row.resolved_by = actor
         row.review_status = "USER_EDITED"
-    # A patch with no value (and no confirm) changes nothing about the review: it must
-    # never flip an unreviewed value to CONFIRMED, because `unreviewed_critical` gates
-    # FINAL exports on exactly that status.
+    elif confirm:
+        row.state = "RESOLVED" if row.value not in (None, "") else "MISSING"
+        row.origin = ORIGIN_INPUT_DERIVED
+        row.document_role = ROLE_BUSINESS_INPUT
+        row.resolution_method = "CONFIRMED"
+        row.resolved_by = actor
+        row.review_status = "CONFIRMED"
     row.revision = (row.revision or 1) + 1
     row.updated_at = _now()
     snapshot = await load_consistent_snapshot(session, shipment_id)
-    row.source_snapshot_hash = snapshot.hash
+    touched = value is not None or confirm
+    if touched:
+        # Only a decision the reviewer actually made anchors the row to a snapshot: a
+        # note-only patch must not refresh the hash, or a later resolve would skip the
+        # STALE_REVIEW flag for evidence that changed since the real decision.
+        row.source_snapshot_hash = snapshot.hash
     session.add(
         ResolvedFieldHistory(
             resolved_field_id=row.id,
@@ -921,7 +996,9 @@ async def set_resolved_field(
             new_value=row.value,
             actor=actor,
             reason=reason,
-            resolution_method="USER_EDITED" if not confirm else "CONFIRMED",
+            resolution_method=(
+                ("USER_EDITED" if not confirm else "CONFIRMED") if touched else "NOTE"
+            ),
             source_snapshot_hash=snapshot.hash,
         )
     )

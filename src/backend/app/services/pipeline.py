@@ -103,9 +103,13 @@ async def process_document(
         rows = await service.extract_sections(
             doc.filename, path, parsed["pages"], sections, doc.doc_type, parsed["grid"]
         )
-        await _record_extraction_revision(session, doc, path, rows)
 
+        # Report PERSISTING before anything in this session touches the database again:
+        # the revision row below opens the write transaction, and the stage insert runs
+        # on another connection — awaiting it while this session holds the writer lock
+        # self-deadlocks until busy_timeout expires.
         await stage("PERSISTING")
+        await _record_extraction_revision(session, doc, path, rows)
         preserved = await _clear_extraction(session, doc)
         await _persist(session, doc, rows, sections=sections, preserved=preserved)
         # Files of one job run in parallel, so the shipment-wide Tờ khai mirror is
@@ -223,7 +227,9 @@ async def _sections_for_document(doc: Document, path: Path, parsed: dict, doc_ty
     """Fallback: one section covering the file when classification returned none."""
     if parsed["grid"] is not None or not parsed["pages"]:
         return []
-    manifests = build_page_manifests(path, parsed["pages"])
+    # Manifest building opens and walks the PDF (sync, CPU-bound): keep it off the
+    # event loop so sibling documents keep making progress.
+    manifests = await asyncio.to_thread(build_page_manifests, path, parsed["pages"])
     return [
         {
             "page_start": 0,
@@ -279,7 +285,7 @@ async def _replace_sections(session: AsyncSession, doc: Document, sections: list
 async def _record_extraction_revision(session: AsyncSession, doc: Document, path: Path, rows) -> None:
     digest = doc.checksum
     try:
-        digest = compute_checksum(path.read_bytes())
+        digest = compute_checksum(await asyncio.to_thread(path.read_bytes))
     except Exception:
         digest = doc.checksum
     session.add(
@@ -509,9 +515,12 @@ def _dec(value: str | None):
     if value is None:
         return None
     try:
-        return Decimal(value)
+        parsed = Decimal(value)
     except InvalidOperation:
         return None
+    # Decimal() happily parses "NaN"/"Infinity"; those are never real quantities and
+    # would poison every sum computed over the mirrored value.
+    return parsed if parsed.is_finite() else None
 
 
 async def upsert_parties_and_transactions(session: AsyncSession, shipment_id: int) -> None:

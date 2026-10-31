@@ -252,9 +252,15 @@ def write_tokhai_export(
     tax_rows = tkn_map.get("tax_rows") or {}
 
     max_lines = len(line_blocks.get("block_starts") or []) * int(line_blocks.get("capacity_per_block") or 1)
-    if len(payload.goods) > max_lines:
+    # A blanked numbered row (its source disappeared on re-extraction) stays in the
+    # payload so `goods.<seq>.*` addressing keeps working, but it must not consume a
+    # template line block, inflate the printed goods count, or add a page.
+    live_goods = [
+        g for g in payload.goods if any(k != "taxes" and v not in (None, "") for k, v in g.items())
+    ]
+    if len(live_goods) > max_lines:
         raise ExportError(
-            f"Template Tờ khai chứa tối đa {max_lines} dòng hàng nhưng hồ sơ có {len(payload.goods)} dòng. "
+            f"Template Tờ khai chứa tối đa {max_lines} dòng hàng nhưng hồ sơ có {len(live_goods)} dòng. "
             "Cần tách tờ khai hoặc mở rộng template — không tự chèn trang."
         )
 
@@ -269,7 +275,7 @@ def write_tokhai_export(
     per_block = int(line_blocks.get("capacity_per_block") or 1)
     if not block_starts:
         raise ExportError("Mapping Tờ khai thiếu line_blocks.block_starts")
-    page_total = _pages_used(len(payload.goods), block_starts, per_block)
+    page_total = _pages_used(len(live_goods), block_starts, per_block)
 
     def write(ws, sheet: str, ref: str, field_key: str, value: str | None, *, required: bool) -> None:
         nonlocal filled
@@ -311,7 +317,7 @@ def write_tokhai_export(
 
     _write_banner(tkn, payload.header.get("declaration.declaration_no"))
     write(tkn, "TKN", "U75", "declaration.page_count", str(page_total), required=False)
-    write(tkn, "TKN", "AF75", "declaration.goods_line_count", str(len(payload.goods)), required=False)
+    write(tkn, "TKN", "AF75", "declaration.goods_line_count", str(len(live_goods)), required=False)
     for frame in frames:
         if int(frame.get("page") or 0) <= page_total:
             _set_page_counter(tkn, frame["counter_cell"], int(frame["page"]), page_total)
@@ -335,13 +341,13 @@ def write_tokhai_export(
     seq_letter = line_blocks.get("block_seq_letter") or "C"
     for block_idx, block_start in enumerate(block_starts):
         refs = _block_refs(line_blocks.get("columns") or {}, block_start, first_start)
-        if block_idx * per_block < len(payload.goods):
+        if block_idx * per_block < len(live_goods):
             tkn[f"{seq_letter}{block_start}"] = f"<{block_idx + 1:02d}>"
         for slot in range(per_block):
             idx = block_idx * per_block + slot
-            if idx >= len(payload.goods):
+            if idx >= len(live_goods):
                 break
-            goods = payload.goods[idx]
+            goods = live_goods[idx]
             for ref, col in refs.items():
                 key = col["field"]
                 required = (
@@ -358,7 +364,7 @@ def write_tokhai_export(
         first_tax_start = tax_slot_starts[0]
         for block_idx, block_start in enumerate(block_starts):
             line_idx = block_idx * per_block
-            goods = payload.goods[line_idx] if line_idx < len(payload.goods) else None
+            goods = live_goods[line_idx] if line_idx < len(live_goods) else None
             goods_taxes = (goods or {}).get("taxes") or []
             if len(goods_taxes) > len(tax_slot_starts):
                 warnings.append(
@@ -428,7 +434,7 @@ def write_tokhai_export(
             )
         _, anchor_row = split_ref(hang_blocks.get("anchor_ref") or "G17")
         stride = int(hang_blocks.get("row_stride") or 1)
-        for idx, goods in enumerate(payload.goods[: len(block_starts) * per_block]):
+        for idx, goods in enumerate(live_goods[: len(block_starts) * per_block]):
             for ref, col in (hang_blocks.get("columns") or {}).items():
                 letter, row = split_ref(ref)
                 write(hang, "HANG", f"{letter}{row + idx * stride}",
@@ -437,9 +443,7 @@ def write_tokhai_export(
                     required=False,
                 )
 
-    no_goods = not [
-        g for g in payload.goods if any(k != "taxes" and v not in (None, "") for k, v in g.items())
-    ]
+    no_goods = not live_goods
     if no_goods:
         warnings.append("Tờ khai không có dòng hàng — không thể xuất FINAL")
     unresolved = payload.critical_missing()
@@ -536,7 +540,12 @@ def verify_tokhai_round_trip(path: Path, mapping: dict[str, Any], payload: Decla
     # page counters, banner and derived counts
     blocks = [int(b) for b in (line_blocks.get("block_starts") or [])]
     per_block = int(line_blocks.get("capacity_per_block") or 1)
-    total_pages = _pages_used(len(payload.goods), blocks, per_block) if blocks else 1
+    # Mirror the writer's live-goods filter: a blanked numbered bucket stays in the
+    # payload for addressing but must not drive page counts or cell expectations.
+    live_goods = [
+        g for g in payload.goods if any(k != "taxes" and v not in (None, "") for k, v in g.items())
+    ]
+    total_pages = _pages_used(len(live_goods), blocks, per_block) if blocks else 1
     for frame in tkn_map.get("page_frames") or []:
         if int(frame.get("page") or 0) <= total_pages:
             expected_counter = f"{frame['page']}/{total_pages}"
@@ -606,7 +615,7 @@ def verify_tokhai_round_trip(path: Path, mapping: dict[str, Any], payload: Decla
         first_tax_start = tax_slot_starts[0]
         for block_idx, block_start in enumerate(blocks):
             line_idx = block_idx * per_block
-            goods = payload.goods[line_idx] if line_idx < len(payload.goods) else None
+            goods = live_goods[line_idx] if line_idx < len(live_goods) else None
             goods_taxes = (goods or {}).get("taxes") or []
             block_offset = block_start - blocks[0]
             for slot_idx, slot_start in enumerate(tax_slot_starts):
@@ -624,7 +633,7 @@ def verify_tokhai_round_trip(path: Path, mapping: dict[str, Any], payload: Decla
     if hang_blocks.get("verified_data_cells") and "HANG" in wb.sheetnames:
         _, anchor_row = split_ref(hang_blocks.get("anchor_ref") or "G17")
         stride = int(hang_blocks.get("row_stride") or 1)
-        for idx, goods in enumerate(payload.goods):
+        for idx, goods in enumerate(live_goods):
             for ref, col in (hang_blocks.get("columns") or {}).items():
                 letter, row = split_ref(ref)
                 expected = goods.get(col["field"])
@@ -639,7 +648,7 @@ def verify_tokhai_round_trip(path: Path, mapping: dict[str, Any], payload: Decla
         first_start = block_starts[0]
         for block_idx, block_start in enumerate(block_starts):
             refs = _block_refs(line_blocks.get("columns") or {}, block_start, first_start)
-            goods = payload.goods[block_idx] if block_idx < len(payload.goods) else None
+            goods = live_goods[block_idx] if block_idx < len(live_goods) else None
             if goods is None:
                 break
             for ref, col in refs.items():

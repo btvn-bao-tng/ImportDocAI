@@ -160,9 +160,19 @@ async def test_parallel_documents_do_not_lock_each_other_out(engine_db, tmp_path
 
     monkeypatch.setattr(pipeline, "ExtractionService", SlowService)
 
+    async def on_stage(document_id: int, stage_name: str) -> None:
+        # The PERSISTING update runs on another connection while this document's
+        # session is between extraction and the persist transaction: if the revision
+        # row (or anything else) opened the write transaction first, this probe
+        # deadlocks against it until busy_timeout expires.
+        if stage_name == "PERSISTING":
+            await probe(f"doc{document_id}:stage")
+
     async def run(document_id: int) -> None:
         async with session_scope() as session:
-            await pipeline.process_document(session, llm=None, document_id=document_id)
+            await pipeline.process_document(
+                session, llm=None, document_id=document_id, on_stage=on_stage
+            )
 
     await asyncio.gather(*(run(doc_id) for doc_id in doc_ids))
 

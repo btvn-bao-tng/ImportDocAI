@@ -45,7 +45,12 @@ def parallel_limit() -> int:
     return min(MAX_PARALLEL_LIMIT, max(1, wanted))
 
 
-async def _update_progress(job_id: int, **values) -> None:
+# A transient SQLite write error on the progress tables is retried on this cadence;
+# after the last delay the update is dropped so processing can continue.
+_PROGRESS_RETRY_DELAYS = (0.25, 1.0, 3.0)
+
+
+async def _update_progress(job_id: int, _retry: int = 0, **values) -> None:
     """Overwrite job progress fields. Only called between files, never per stage.
 
     Best-effort by design: progress cosmetics must never fail (or roll back) the
@@ -59,6 +64,9 @@ async def _update_progress(job_id: int, **values) -> None:
             for key, value in values.items():
                 setattr(job, key, value)
     except SQLAlchemyError as exc:
+        if _retry < len(_PROGRESS_RETRY_DELAYS):
+            await asyncio.sleep(_PROGRESS_RETRY_DELAYS[_retry])
+            return await _update_progress(job_id, _retry=_retry + 1, **values)
         log.warning("progress update for job %s failed (continuing): %s", job_id, exc)
 
 
@@ -66,7 +74,9 @@ async def _update_progress(job_id: int, **values) -> None:
 # locks (`with_for_update` compiles to a plain SELECT), so editing a shared JSON map
 # would lose entries when two files report at once; an upsert on a unique key cannot.
 # The map in the API response is projected from these rows, never stored twice.
-async def _set_document_stage(job_id: int, document_id: int, stage: str | None, attempt: int | None = None) -> None:
+async def _set_document_stage(
+    job_id: int, document_id: int, stage: str | None, attempt: int | None = None, _retry: int = 0
+) -> None:
     try:
         async with session_scope() as session:
             job = await session.get(Job, job_id)
@@ -102,9 +112,12 @@ async def _set_document_stage(job_id: int, document_id: int, stage: str | None, 
             job.current_stage = stage
             job.current_document_id = document_id
     except SQLAlchemyError as exc:
-        # The stage table only feeds the UI stepper. A transient write conflict (for
-        # example a sibling document briefly holding SQLite's writer lock) must not
-        # abort the extraction that reported the stage.
+        # The stage table only feeds the UI stepper, so a write that cannot succeed
+        # must not abort the extraction that reported the stage. Retry first: losing
+        # a completion update would leave `document_done` permanently short.
+        if _retry < len(_PROGRESS_RETRY_DELAYS):
+            await asyncio.sleep(_PROGRESS_RETRY_DELAYS[_retry])
+            return await _set_document_stage(job_id, document_id, stage, attempt, _retry=_retry + 1)
         log.warning("stage update for job %s doc %s failed (continuing): %s", job_id, document_id, exc)
 async def refresh_shipment_status(session: AsyncSession, shipment_id: int) -> None:
     shipment = await session.get(Shipment, shipment_id)
@@ -201,7 +214,11 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
             try:
                 from .resolution import resolve_shipment
 
-                await resolve_shipment(session, shipment_id, "tokhai_import_v1", llm)
+                report = await resolve_shipment(session, shipment_id, "tokhai_import_v1", llm)
+                if report.stale:
+                    # Sources changed mid-resolve: nothing was written, but reporting
+                    # plain DONE would hide that the shipment has no resolved values.
+                    resolution_error = f"RESOLUTION_STALE: {report.message}"
             except Exception as exc:
                 # Resolution is a separate, retryable stage: a failure here must not
                 # erase the extraction that already succeeded, and must not be reported

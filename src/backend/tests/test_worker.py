@@ -229,8 +229,8 @@ async def test_parallel_files_do_not_lose_stage_or_done_updates(job_db, monkeypa
     original = job_runner._set_document_stage
     observed: list[int] = []
 
-    async def spy(job, document_id, stage, attempt=None):
-        await original(job, document_id, stage, attempt)
+    async def spy(job, document_id, stage, attempt=None, **kwargs):
+        await original(job, document_id, stage, attempt, **kwargs)
         if stage is None:
             async with job_db() as session:
                 observed.append((await session.get(Job, job)).document_done)
