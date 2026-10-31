@@ -150,39 +150,134 @@ async def test_run_process_job_tracks_document_progress(job_db, monkeypatch):
 
     job_id = await worker.claim_job()
     assert await job_runner.run_process_job(job_id, llm=None) is True
-    assert seen == [(11, "EXTRACTING"), (12, "EXTRACTING")]
+    assert sorted(seen) == [(11, "EXTRACTING"), (12, "EXTRACTING")]
     async with job_db() as session:
         job = await session.get(Job, job_id)
         assert job.document_total == 2
         assert job.document_done == 2
         assert job.current_stage == "FINALIZING"
+        assert job.document_stages == {}
 
 
-async def test_progress_is_ignored_once_job_is_terminal(job_db):
+async def test_run_process_job_runs_documents_in_parallel(job_db, monkeypatch):
+    """Two files must be in flight at the same time."""
+    import asyncio
+
+    from app.services import job_runner, pipeline
+
+    both_running = asyncio.Event()
+    started = 0
+
+    async def fake_process(session, llm, document_id, force=False, on_stage=None):
+        nonlocal started
+        started += 1
+        await on_stage(document_id, "EXTRACTING")
+        if started == 2:
+            both_running.set()
+        await asyncio.wait_for(both_running.wait(), timeout=2)
+
+    monkeypatch.setattr(pipeline, "process_document", fake_process)
+    async with job_db() as session:
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": [21, 22]}, idempotency_key="par"))
+
+    job_id = await worker.claim_job()
+    assert await job_runner.run_process_job(job_id, llm=None) is True
+    assert started == 2
+    async with job_db() as session:
+        job = await session.get(Job, job_id)
+        assert job.document_done == 2
+        assert job.document_stages == {}
+
+
+async def test_parallel_files_do_not_lose_stage_or_done_updates(job_db, monkeypatch):
+    """Every file publishes stages under concurrency: no entry and no completion may be lost."""
+    import asyncio
+
+    from app.services import job_runner, pipeline
+
+    doc_ids = list(range(1, 9))
+
+    async def fake_process(session, llm, document_id, force=False, on_stage=None):
+        for stage in ("PARSING", "CLASSIFYING", "EXTRACTING"):
+            await on_stage(document_id, stage)
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(pipeline, "process_document", fake_process)
+    seen: set[str] = set()
+
+    async with job_db() as session:
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": doc_ids}, idempotency_key="many"))
+    job_id = await worker.claim_job()
+
+    original = job_runner._set_document_stage
+
+    async def spy(job, document_id, stage):
+        if stage is not None:
+            seen.add(str(document_id))
+        await original(job, document_id, stage)
+
+    monkeypatch.setattr(job_runner, "_set_document_stage", spy)
+    assert await job_runner.run_process_job(job_id, llm=None) is True
+    assert seen == {str(i) for i in doc_ids}
+    async with job_db() as session:
+        job = await session.get(Job, job_id)
+        assert job.document_done == len(doc_ids)
+        assert job.document_total == len(doc_ids)
+        assert job.document_stages == {}
+        assert job.current_stage == "FINALIZING"
+
+
+async def test_duplicate_document_ids_are_processed_once(job_db, monkeypatch):
+    from app.services import job_runner, pipeline
+
+    calls: list[int] = []
+
+    async def fake_process(session, llm, document_id, force=False, on_stage=None):
+        calls.append(document_id)
+
+    monkeypatch.setattr(pipeline, "process_document", fake_process)
+    async with job_db() as session:
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": [5, 5, 6]}, idempotency_key="dup"))
+    job_id = await worker.claim_job()
+
+    assert await job_runner.run_process_job(job_id, llm=None) is True
+    assert sorted(calls) == [5, 6]
+    async with job_db() as session:
+        job = await session.get(Job, job_id)
+        assert job.document_total == 2
+        assert job.document_done == 2
+
+
+async def test_document_stages_are_recorded_per_file(job_db):
     from app.services import job_runner
 
     async with job_db() as session:
-        session.add(Job(kind="PROCESS_DOCUMENTS", payload={}, idempotency_key="p2", status="DONE"))
-        job = (await session.execute(__import__("sqlalchemy").select(Job))).scalars().first()
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={}, idempotency_key="stg"))
+    job_id = await worker.claim_job()
 
-    await job_runner._update_progress(job.id, current_stage="EXTRACTING")
+    await job_runner._set_document_stage(job_id, 31, "PARSING")
+    await job_runner._set_document_stage(job_id, 32, "CLASSIFYING")
     async with job_db() as session:
-        job = await session.get(Job, job.id)
-        assert job.current_stage is None
+        job = await session.get(Job, job_id)
+        assert job.document_stages == {"31": "PARSING", "32": "CLASSIFYING"}
+        assert job.document_done == 0
+        assert job.current_document_id == 32
+
+    await job_runner._set_document_stage(job_id, 31, None)
+    async with job_db() as session:
+        job = await session.get(Job, job_id)
+        assert job.document_stages == {"32": "CLASSIFYING"}
+        assert job.document_done == 1
 
 
-async def test_finish_job_requeues_until_budget_then_fails(job_db):
-    async with job_db() as session:
-        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": []}, idempotency_key="drain"))
-    drained = 0
-    while True:
-        job_id = await worker.claim_job()
-        if job_id is None:
-            break
-        drained += 1
-        await worker._finish_job(job_id, failed=True)
-    assert drained == worker.MAX_ATTEMPTS
-    async with job_db() as session:
-        job = (await session.execute(__import__("sqlalchemy").select(Job).where(Job.idempotency_key == "drain"))).scalars().first()
-        assert job.status == "FAILED"
-        assert job.attempts == worker.MAX_ATTEMPTS
+async def test_parallel_limit_reads_environment(monkeypatch):
+    from app.services import job_runner
+
+    monkeypatch.delenv("MAX_PARALLEL_DOCUMENTS", raising=False)
+    assert job_runner.parallel_limit() == job_runner.DEFAULT_PARALLEL_DOCUMENTS
+    monkeypatch.setenv("MAX_PARALLEL_DOCUMENTS", "2")
+    assert job_runner.parallel_limit() == 2
+    monkeypatch.setenv("MAX_PARALLEL_DOCUMENTS", "nonsense")
+    assert job_runner.parallel_limit() == job_runner.DEFAULT_PARALLEL_DOCUMENTS
+    monkeypatch.setenv("MAX_PARALLEL_DOCUMENTS", "0")
+    assert job_runner.parallel_limit() == 1

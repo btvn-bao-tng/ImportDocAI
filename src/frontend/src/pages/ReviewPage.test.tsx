@@ -177,28 +177,66 @@ describe("ReviewPage", () => {
     documentGrid.mockResolvedValue({ sheets: [{ name: "Sheet1", rows: [["A1"]], merges: [] }] });
   });
 
-  it("shows the source documents on the left and the final template on the right", async () => {
+  it("shows the source documents on the left and the extracted values on the right", async () => {
     renderPage();
 
     expect(await screen.findByText("UI-TEST-2026")).toBeTruthy();
     expect(screen.getByRole("group", { name: "Chọn chứng từ" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "packing-list.pdf" })).toBeTruthy();
 
-    const templateHeading = await screen.findByRole("heading", { name: "Mẫu tờ khai cuối" });
-    const templatePanel = templateHeading.closest("section");
+    const valuePanel = await screen.findByRole("region", { name: "Giá trị trích xuất" });
+    expect(valuePanel).toBeTruthy();
+    expect(await within(valuePanel).findByText("Trọng lượng cả bì")).toBeTruthy();
+    expect(within(valuePanel).getByText("transport.gross_weight_kg")).toBeTruthy();
+    expect(within(valuePanel).getByText("1.250")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Mẫu tờ khai cuối" })).toBeNull();
+
+    expect(await screen.findAllByText("1 cần xem lại")).toBeTruthy();
+  });
+
+  it("marks the source document when an extracted value is clicked", async () => {
+    renderPage();
+
+    const valuePanel = await screen.findByRole("region", { name: "Giá trị trích xuất" });
+    fireEvent.click(await within(valuePanel).findByText("transport.gross_weight_kg"));
+
+    expect(await screen.findByText(/Đang đánh dấu: Trọng lượng cả bì/)).toBeTruthy();
+  });
+
+  it("marks the evidence from the keyboard as well", async () => {
+    renderPage();
+
+    const valuePanel = await screen.findByRole("region", { name: "Giá trị trích xuất" });
+    const row = await within(valuePanel).findByRole("row", { name: /Trọng lượng cả bì/ });
+    expect(row.getAttribute("tabindex")).toBe("0");
+    row.focus();
+    fireEvent.keyDown(row, { key: "Enter" });
+
+    expect(await screen.findByText(/Đang đánh dấu: Trọng lượng cả bì/)).toBeTruthy();
+  });
+
+  it("switches to the final template and back to the extracted values", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Mẫu tờ khai cuối" }));
+
+    const templatePanel = (await screen.findByRole("heading", { name: "Mẫu tờ khai cuối" })).closest("section");
     expect(templatePanel).toBeTruthy();
     expect(await within(templatePanel as HTMLElement).findByText("Số tờ khai")).toBeTruthy();
     expect(await within(templatePanel as HTMLElement).findByText("108299395961")).toBeTruthy();
     expect(within(templatePanel as HTMLElement).getByRole("link", { name: "Mở tệp mẫu" }).getAttribute("href")).toBe(
       "/api/v1/templates/tokhai_import_v1/file",
     );
-
     expect(templatePreview).toHaveBeenCalledWith(1, "tokhai_import_v1");
-    expect(await screen.findByText("1 cần xem lại")).toBeTruthy();
+
+    fireEvent.click(within(templatePanel as HTMLElement).getByRole("button", { name: "← Giá trị trích xuất" }));
+    expect(await screen.findByRole("region", { name: "Giá trị trích xuất" })).toBeTruthy();
   });
 
   it("switches the template sheet when a tab is chosen", async () => {
     renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Mẫu tờ khai cuối" }));
 
     const tabs = await screen.findByRole("tablist", { name: "Chọn sheet mẫu" });
     const hangTab = within(tabs).getByRole("tab", { name: "HANG" });
@@ -296,6 +334,7 @@ describe("ReviewPage — template values and evidence", () => {
   it("highlights the evidence cell in the left panel when a filled value is clicked", async () => {
     renderPage();
 
+    fireEvent.click(await screen.findByRole("button", { name: "Mẫu tờ khai cuối" }));
     const value = await screen.findByRole("button", { name: /108299395961/ });
     fireEvent.click(value);
 
@@ -308,6 +347,7 @@ describe("ReviewPage — template values and evidence", () => {
   it("shows a notice when a value has no stored evidence", async () => {
     renderPage();
 
+    fireEvent.click(await screen.findByRole("button", { name: "Mẫu tờ khai cuối" }));
     const value = await screen.findByRole("button", { name: /02\/06\/2026/ });
     fireEvent.click(value);
 
@@ -355,6 +395,7 @@ describe("ReviewPage — merged cells and drag", () => {
   it("clamps merged spans to the rendered rows and keeps the anchor value", async () => {
     renderPage();
 
+    fireEvent.click(await screen.findByRole("button", { name: "Mẫu tờ khai cuối" }));
     const anchor = await screen.findByRole("cell", { name: "Tờ khai" });
     expect(anchor.getAttribute("rowspan")).toBe("2");
     expect(anchor.getAttribute("colspan")).toBe("2");
