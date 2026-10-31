@@ -22,6 +22,8 @@ RUN rm -rf e2e playwright.config.ts playwright-report test-results dist \
 FROM nginx:1.27-alpine AS runtime
 
 RUN apk add --no-cache curl \
+ && sed -i 's|application/javascript[[:space:]]*js;|application/javascript js mjs;|' /etc/nginx/mime.types \
+ && grep -q 'js mjs;' /etc/nginx/mime.types \
  && rm -f /etc/nginx/conf.d/default.conf
 
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
