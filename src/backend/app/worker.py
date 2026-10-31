@@ -8,12 +8,12 @@ import socket
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from .config import load_settings
 from .db import create_all, dispose, init_engine, session_scope
 from .deps import init_state
-from .models import Job
+from .models import Job, JobDocumentStage
 from .services.job_runner import run_process_job
 from .services.llm import LLMClient
 
@@ -36,6 +36,8 @@ async def requeue_expired_leases() -> int:
         for job in expired:
             job.status = "PENDING"
             job.lease_until = None
+            # Stages of the abandoned attempt must not leak into the retry.
+            await session.execute(delete(JobDocumentStage).where(JobDocumentStage.job_id == job.id))
             log.warning("requeued expired lease job %s (attempts=%s)", job.id, job.attempts)
         return len(expired)
 

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, Index
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -141,6 +141,9 @@ class Declaration(Base):
     """
 
     __tablename__ = "declarations"
+    # Files of one shipment are processed in parallel and each declaration mirror is an
+    # upsert; without this key two of them could both insert a header row.
+    __table_args__ = (UniqueConstraint("shipment_id", name="uq_declaration_shipment"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     shipment_id: Mapped[int] = mapped_column(ForeignKey("shipments.id"), index=True)
@@ -331,6 +334,28 @@ class GoodsTaxLine(Base):
     exemption_note: Mapped[str | None] = mapped_column(String(256))
 
 
+class JobDocumentStage(Base):
+    """Live pipeline stage of one file inside a running job (deleted when the file ends).
+
+    One row per in-flight document instead of a JSON map on `jobs`: SQLite has no row
+    locks, and concurrent files updating a shared map lose entries.
+    """
+
+    __tablename__ = "job_document_stages"
+    __table_args__ = (
+        UniqueConstraint("job_id", "document_id", name="uq_job_document_stage"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    document_id: Mapped[int] = mapped_column(Integer)
+    stage: Mapped[str] = mapped_column(String(32))
+    # `jobs.attempts` of the run that wrote this row: a worker whose lease expired must
+    # not publish stages, or count completions, for the retry that replaced it.
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
@@ -356,7 +381,6 @@ class Job(Base):
     document_done: Mapped[int] = mapped_column(Integer, default=0)
     current_document_id: Mapped[int | None] = mapped_column(Integer)
     current_stage: Mapped[str | None] = mapped_column(String(32))
-    document_stages: Mapped[dict] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str] = mapped_column(String(256), index=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

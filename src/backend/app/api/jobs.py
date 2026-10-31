@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..audit import record_audit
 from ..deps import get_session
-from ..models import Document, Job, Shipment
+from ..models import Document, Job, JobDocumentStage, Shipment
 from ..services.job_runner import DOCUMENT_STAGES, FINAL_STAGE
 
 router = APIRouter(tags=["jobs"])
@@ -61,7 +61,8 @@ async def start_process(
     return {"job_id": job.id, "status": "PENDING"}
 
 
-def serialize_job(job: Job) -> dict:
+def serialize_job(job: Job, stage_rows: list[JobDocumentStage] | None = None) -> dict:
+    stages = {str(row.document_id): row.stage for row in stage_rows or []}
     return {
         "id": job.id,
         "kind": job.kind,
@@ -75,7 +76,7 @@ def serialize_job(job: Job) -> dict:
             "document_done": job.document_done or 0,
             "current_document_id": job.current_document_id,
             "current_stage": job.current_stage,
-            "document_stages": job.document_stages or {},
+            "document_stages": stages,
             "stages": list(DOCUMENT_STAGES),
             "final_stage": FINAL_STAGE,
         },
@@ -87,7 +88,13 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
     job = await session.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "Không tìm thấy job")
-    return serialize_job(job)
+    return serialize_job(job, await _stage_rows(session, job.id))
+
+
+async def _stage_rows(session: AsyncSession, job_id: int) -> list[JobDocumentStage]:
+    return list(
+        (await session.execute(select(JobDocumentStage).where(JobDocumentStage.job_id == job_id))).scalars().all()
+    )
 
 
 @router.get("/shipments/{shipment_id}/progress")
@@ -102,7 +109,8 @@ async def shipment_progress(shipment_id: int, session: AsyncSession = Depends(ge
     own = [j for j in jobs if (j.payload or {}).get("shipment_id") == shipment_id and j.kind == "PROCESS_DOCUMENTS"]
     active = next((j for j in own if j.status in {"PENDING", "RUNNING"}), None)
     latest = active or (own[0] if own else None)
-    return {"shipment_status": shipment.status, "job": serialize_job(latest) if latest else None}
+    rows = await _stage_rows(session, latest.id) if latest else []
+    return {"shipment_status": shipment.status, "job": serialize_job(latest, rows) if latest else None}
 
 
 @router.get("/shipments/{shipment_id}/jobs")

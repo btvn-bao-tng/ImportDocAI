@@ -10,6 +10,7 @@ own (the template prints the exact strings the source system shows).
 from __future__ import annotations
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -171,11 +172,16 @@ async def upsert_declaration(
     """
     from ..models import utcnow
 
+    # Two declaration files of one shipment can be mirrored at the same time; the unique
+    # key on shipment_id makes this an upsert instead of a duplicate insert.
+    await session.execute(
+        sqlite_insert(Declaration)
+        .values(shipment_id=shipment_id, document_id=document_id)
+        .on_conflict_do_nothing(index_elements=["shipment_id"])
+    )
     declaration = await get_declaration(session, shipment_id)
-    if declaration is None:
-        declaration = Declaration(shipment_id=shipment_id, document_id=document_id)
-        session.add(declaration)
-        await session.flush()
+    if declaration is None:  # pragma: no cover - the upsert above guarantees a row
+        return
 
     for key, value in header.items():
         if not key.startswith("declaration."):
