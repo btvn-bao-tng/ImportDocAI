@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -80,7 +81,7 @@ async def upload_documents(
         doc.storage_path = str(target)
 
         try:
-            parsed = parse_document(target)
+            parsed = await asyncio.to_thread(parse_document, target)
             doc.page_count = parsed["page_count"]
             doc.has_text_layer = bool(parsed["has_text_layer"])
         except IngestError as exc:
@@ -93,7 +94,10 @@ async def upload_documents(
         record_audit(session, "document", doc.id, "UPLOADED", payload={"filename": filename, "checksum": checksum})
         results.append({"filename": filename, "status": "UPLOADED", "document_id": doc.id, "page_count": doc.page_count})
 
-    if shipment.status == "DRAFT":
+    # Only a batch that actually stored a document can ever be processed: flipping a
+    # DRAFT shipment to PROCESSING when every file was rejected would strand it there
+    # (no documents means no job, and only a job's refresh would reset the status).
+    if shipment.status == "DRAFT" and any(r["status"] in {"UPLOADED", "FAILED"} for r in results):
         shipment.status = "PROCESSING"
     await session.commit()
     return {"documents": results}

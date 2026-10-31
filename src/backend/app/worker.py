@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from .config import load_settings
 from .db import create_all, dispose, init_engine, session_scope
@@ -34,6 +35,16 @@ async def requeue_expired_leases() -> int:
             await session.execute(select(Job).where(Job.status == "RUNNING", Job.lease_until < _now()))
         ).scalars().all()
         for job in expired:
+            if job.attempts >= MAX_ATTEMPTS:
+                # claim_job only picks attempts < MAX_ATTEMPTS: requeueing this job
+                # would strand it in PENDING forever (its owner is gone, so nothing
+                # else will ever move it to FAILED).
+                job.status = "FAILED"
+                job.lease_until = None
+                job.error = f"worker mất lease sau {job.attempts} lần thử — không chạy lại được nữa"
+                await session.execute(delete(JobDocumentStage).where(JobDocumentStage.job_id == job.id))
+                log.error("job %s exhausted %s attempts (expired lease) — FAILED", job.id, job.attempts)
+                continue
             job.status = "PENDING"
             job.lease_until = None
             # Stages of the abandoned attempt must not leak into the retry.
@@ -131,7 +142,14 @@ async def run_worker(poll_seconds: float = IDLE_SLEEP_SECONDS, once: bool = Fals
 
     try:
         while True:
-            job_id = await claim_job()
+            try:
+                job_id = await claim_job()
+            except SQLAlchemyError:
+                # A lock timeout between polls must not kill the worker process:
+                # nothing else in this deployment restarts it.
+                log.exception("claiming a job failed (continuing)")
+                await asyncio.sleep(poll_seconds)
+                continue
             if job_id is None:
                 if once:
                     return
@@ -147,7 +165,10 @@ async def run_worker(poll_seconds: float = IDLE_SLEEP_SECONDS, once: bool = Fals
                 failed = True
             finally:
                 heartbeat.cancel()
-            await _finish_job(job_id, failed=failed)
+            try:
+                await _finish_job(job_id, failed=failed)
+            except SQLAlchemyError:
+                log.exception("finishing job %s failed (job row left as-is)", job_id)
             if once and await _pending_remaining() == 0:
                 return
     finally:

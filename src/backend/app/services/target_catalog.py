@@ -178,9 +178,17 @@ UNIT_CODES = {
     "cbm": "MTQ",
     "m³": "MTQ",
     "m3": "MTQ",
+    "m2": "MTK",
+    "m²": "MTK",
     "kg": "KGM",
     "kgs": "KGM",
     "kilogram": "KGM",
+    "kilograms": "KGM",
+    "t": "TNE",
+    "ton": "TNE",
+    "tons": "TNE",
+    "tonne": "TNE",
+    "tonnes": "TNE",
     "pcs": "PCE",
     "piece": "PCE",
     "pieces": "PCE",
@@ -189,6 +197,9 @@ UNIT_CODES = {
     "packages": "PK",
     "ctn": "CTN",
     "carton": "CTN",
+    # `normalize.UNIT_ALIASES` folds CTNS/CARTONS to "cartons", so the plural
+    # must resolve too or the customs code is never emitted for those rows.
+    "cartons": "CTN",
 }
 
 

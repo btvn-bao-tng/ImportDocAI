@@ -44,6 +44,22 @@ async def create_shipment(body: ShipmentCreate, session: AsyncSession = Depends(
     return {"id": shipment.id, "code": shipment.code, "status": shipment.status}
 
 
+async def _open_critical_count(session: AsyncSession, shipment_id: int) -> int:
+    return (
+        await session.execute(
+            select(func.count())
+            .select_from(ExtractedField)
+            .join(Document, ExtractedField.document_id == Document.id)
+            .where(
+                Document.shipment_id == shipment_id,
+                ExtractedField.critical.is_(True),
+                ExtractedField.review_status.in_(["UNREVIEWED", "NEEDS_REVIEW"]),
+                ExtractedField.grounding_verified.is_(False),
+            )
+        )
+    ).scalar_one()
+
+
 @router.get("/shipments")
 async def list_shipments(
     q: str | None = None,
@@ -60,20 +76,7 @@ async def list_shipments(
     out = []
     for shipment in shipments:
         docs = (await session.execute(select(Document).where(Document.shipment_id == shipment.id))).scalars().all()
-        open_critical = (
-            await session.execute(
-                select(func.count())
-                .select_from(ExtractedField)
-                .join(Document, ExtractedField.document_id == Document.id)
-                .where(
-                    Document.shipment_id == shipment.id,
-                    ExtractedField.critical.is_(True),
-                    ExtractedField.review_status.in_(["UNREVIEWED", "NEEDS_REVIEW"]),
-                    ExtractedField.grounding_verified.is_(False),
-                )
-            )
-        ).scalar_one()
-        out.append(_summary(shipment, docs, len(docs), open_critical))
+        out.append(_summary(shipment, docs, len(docs), await _open_critical_count(session, shipment.id)))
     return out
 
 
@@ -84,7 +87,7 @@ async def get_shipment(shipment_id: int, session: AsyncSession = Depends(get_ses
         raise HTTPException(404, "Không tìm thấy shipment")
     docs = (await session.execute(select(Document).where(Document.shipment_id == shipment.id))).scalars().all()
     return {
-        **_summary(shipment, docs, len(docs), 0),
+        **_summary(shipment, docs, len(docs), await _open_critical_count(session, shipment.id)),
         "documents": [
             {
                 "id": d.id,

@@ -88,6 +88,14 @@ def _iso(year: int, month: int, day: int) -> str | None:
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
+# Strict Vietnamese thousands grouping with TWO or more dot groups
+# ('607.301.890', '1.234.567'): a decimal separator appears at most once in any
+# locale, so repeated groups are unambiguously grouping. A single trailing
+# 3-digit group ('38.030', '1.180') stays hint-driven by design (see
+# _resolve_locale), and irregular patterns ('1.2.3') stay unparseable.
+_GROUPED = re.compile(r"[+-]?\d{1,3}(\.\d{3}){2,}")
+
+
 def detect_number_locale(value: str | None) -> str:
     """Return 'comma_decimal' or 'period_decimal' based on separator placement."""
     if not value:
@@ -96,6 +104,11 @@ def detect_number_locale(value: str | None) -> str:
     last_comma = text.rfind(",")
     last_dot = text.rfind(".")
     if last_comma == -1:
+        # Two or more 3-digit dot groups are unambiguously thousands grouping
+        # ('607.301.890' = 607301890), never a fraction, regardless of any
+        # document-level hint.
+        if _GROUPED.fullmatch(text):
+            return "comma_decimal"
         return "period_decimal"
     if last_dot == -1:
         digits_after_comma = len(text) - last_comma - 1
@@ -144,6 +157,10 @@ def _resolve_locale(text: str, locale: str | None) -> str:
         return heuristic
     if not (has_comma or has_dot):
         return heuristic
+    if not has_comma and _GROUPED.fullmatch(text):
+        # Two or more dot groups cannot be a decimal point even in a
+        # period-decimal document; the grouping read always wins over the hint.
+        return "comma_decimal"
     if locale in {"comma_decimal", "period_decimal"}:
         return locale
     return heuristic

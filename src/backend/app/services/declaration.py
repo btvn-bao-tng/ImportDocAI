@@ -163,7 +163,8 @@ async def build_declaration_payload_from_fields(session: AsyncSession, shipment_
     docs = (
         await session.execute(select(Document).where(Document.shipment_id == shipment_id).order_by(Document.id))
     ).scalars().all()
-    ranked = sorted(docs, key=lambda d: (not d.doc_type.startswith("CUSTOMS_DECLARATION"), d.id))
+    # doc_type is nullable (never-classified documents); treat missing as no match.
+    ranked = sorted(docs, key=lambda d: (not (d.doc_type or "").startswith("CUSTOMS_DECLARATION"), d.id))
 
     header: dict[str, str | None] = {}
     sources: dict[str, FieldSource] = {}

@@ -88,7 +88,10 @@ def create_app(settings=None) -> FastAPI:
 
     @app.get("/api/v1/templates/{version}")
     async def template_detail(version: str):
-        mapping, template_path = load_mapping(version)
+        try:
+            mapping, template_path = load_mapping(version)
+        except ExportError as exc:
+            raise HTTPException(404, str(exc)) from exc
         return {**mapping, "template_path": str(template_path.name)}
 
     def _template_file(version: str):

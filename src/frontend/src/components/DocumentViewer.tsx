@@ -293,10 +293,13 @@ function ExcelViewer({ docId, evidence }: { docId: number; evidence: EvidenceTar
 
   const targetRow = target?.row;
   const targetCol = target?.col;
+  const grid = gridQuery.data;
   useEffect(() => {
-    if (targetRow === undefined || targetCol === undefined) return;
+    if (gridQuery.isPending || targetRow === undefined || targetCol === undefined) return;
+    // Re-run when the grid arrives: on a fresh mount the effect fires while the
+    // grid is still loading and cellRefs is empty, so the scroll would no-op.
     scrollWithinContainer(cellRefs.current[cellKey(targetRow, targetCol)] ?? null, "center");
-  }, [targetRow, targetCol]);
+  }, [targetRow, targetCol, grid, gridQuery.isPending]);
 
   if (gridQuery.isPending) {
     return (

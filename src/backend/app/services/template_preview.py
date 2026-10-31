@@ -62,13 +62,19 @@ def _mapped_payload(mapping: dict, payload: DeclarationPayload) -> dict[str, dic
     block_starts = [int(b) for b in (line_blocks.get("block_starts") or [])]
     per_block = int(line_blocks.get("capacity_per_block") or 1)
     first_start = block_starts[0] if block_starts else 1
+    # Mirror write_tokhai_export: blanked (stale) numbered buckets stay in the
+    # payload for addressing but must not drive the preview's cell map, and only
+    # rows the template can actually hold are shown.
+    live_goods = [
+        g for g in payload.goods if any(k != "taxes" and v not in (None, "") for k, v in g.items())
+    ]
     for block_idx, block_start in enumerate(block_starts):
         refs = _block_refs(line_blocks.get("columns") or {}, block_start, first_start)
         for slot in range(per_block):
             idx = block_idx * per_block + slot
-            if idx >= len(payload.goods):
+            if idx >= len(live_goods):
                 break
-            goods = payload.goods[idx]
+            goods = live_goods[idx]
             for ref, col in refs.items():
                 out["TKN"][ref] = (col["field"], goods.get(col["field"]))
 
@@ -85,7 +91,7 @@ def _mapped_payload(mapping: dict, payload: DeclarationPayload) -> dict[str, dic
         first_tax_start = slot_starts[0]
         for block_idx, block_start in enumerate(block_starts):
             line_idx = block_idx * per_block
-            goods = payload.goods[line_idx] if line_idx < len(payload.goods) else None
+            goods = live_goods[line_idx] if line_idx < len(live_goods) else None
             goods_taxes = (goods or {}).get("taxes") or []
             block_offset = block_start - first_start
             for slot_idx, slot_start in enumerate(slot_starts):
@@ -122,7 +128,8 @@ def _mapped_payload(mapping: dict, payload: DeclarationPayload) -> dict[str, dic
     hang_blocks = hang.get("line_blocks") or {}
     if hang_blocks.get("verified_data_cells"):
         stride = int(hang_blocks.get("row_stride") or 1)
-        for idx, goods in enumerate(payload.goods):
+        # The writer never mirrors more rows than the template holds.
+        for idx, goods in enumerate(live_goods[: len(block_starts) * per_block]):
             for ref, col in (hang_blocks.get("columns") or {}).items():
                 letter, row = split_ref(ref)
                 out["HANG"][f"{letter}{row + idx * stride}"] = (col["field"], goods.get(col["field"]))

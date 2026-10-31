@@ -30,8 +30,8 @@ const DOC_TYPES = [
   { value: "OTHER", label: "Khác" },
 ] as const;
 
-const ACCEPT = ".pdf,.xls,.xlsx,.jpg,.jpeg,.png";
-const ALLOWED_TYPES = new Set(["pdf", "xls", "xlsx", "jpg", "jpeg", "png"]);
+const ACCEPT = ".pdf,.xls,.xlsx,.xlsm,.jpg,.jpeg,.png";
+const ALLOWED_TYPES = new Set(["pdf", "xls", "xlsx", "xlsm", "jpg", "jpeg", "png"]);
 
 type UploadResult = { filename: string; status: string; document_id?: number; error?: string };
 
@@ -191,8 +191,13 @@ export default function UploadPage() {
     },
   });
 
+  const shipment = shipmentQuery.data;
+  const hasProcessed = shipment?.documents.some((doc) => doc.status === "EXTRACTED") ?? false;
+
   const processMutation = useMutation({
-    mutationFn: () => api.process(shipmentId),
+    // Once anything is extracted, the run is a re-process: without force the
+    // backend skips every EXTRACTED document and the job finishes as a no-op.
+    mutationFn: () => api.process(shipmentId, undefined, hasProcessed),
     onSuccess: () => {
       // The progress page owns the run: it polls the job, shows each stage and
       // hands off to the review page when the extraction is done.
@@ -225,9 +230,7 @@ export default function UploadPage() {
     event.target.value = "";
   }
 
-  const shipment = shipmentQuery.data;
   const isProcessing = processMutation.isPending;
-  const hasProcessed = shipment?.documents.some((doc) => doc.status === "EXTRACTED") ?? false;
 
   if (shipmentQuery.isPending) {
     return (
@@ -295,7 +298,7 @@ export default function UploadPage() {
           />
           <p className="type-tagline text-ink">Kéo thả chứng từ vào đây</p>
           <p className="type-body mt-2 text-ink-48">hoặc nhấn để chọn tệp</p>
-          <p className="type-caption mt-4 text-ink-48">PDF, XLS, XLSX, JPG, JPEG, PNG</p>
+          <p className="type-caption mt-4 text-ink-48">PDF, XLS, XLSX, XLSM, JPG, JPEG, PNG</p>
           {uploadMutation.isPending && (
             <div className="mt-5">
               <Spinner label="Đang tải lên…" />

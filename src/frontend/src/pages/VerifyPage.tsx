@@ -354,11 +354,11 @@ export default function VerifyPage() {
                     </tr>
                   }
                 >
-                  {activeDoc.fields.map((row) => {
+                  {activeDoc.fields.map((row, index) => {
                     const active = evidence?.documentId === activeDoc.id && evidence.label === row.label_vi;
                     return (
                       <tr
-                        key={row.field_key}
+                        key={`${row.field_key}-${index}`}
                         className={`cursor-pointer border-t border-divider transition-colors hover:bg-pearl ${
                           active ? "bg-[#eaf2fd]" : ""
                         }`}

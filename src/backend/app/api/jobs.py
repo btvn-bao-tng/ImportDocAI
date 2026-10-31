@@ -103,12 +103,18 @@ async def shipment_progress(shipment_id: int, session: AsyncSession = Depends(ge
     shipment = await session.get(Shipment, shipment_id)
     if shipment is None:
         raise HTTPException(404, "Không tìm thấy shipment")
+    # Filter in SQL: a global LIMIT before the shipment filter would hide this
+    # shipment's jobs once fifty newer jobs exist.
     jobs = (
-        await session.execute(select(Job).order_by(Job.id.desc()).limit(50))
+        await session.execute(
+            select(Job)
+            .where(Job.kind == "PROCESS_DOCUMENTS", Job.payload["shipment_id"].as_integer() == shipment_id)
+            .order_by(Job.id.desc())
+            .limit(50)
+        )
     ).scalars().all()
-    own = [j for j in jobs if (j.payload or {}).get("shipment_id") == shipment_id and j.kind == "PROCESS_DOCUMENTS"]
-    active = next((j for j in own if j.status in {"PENDING", "RUNNING"}), None)
-    latest = active or (own[0] if own else None)
+    active = next((j for j in jobs if j.status in {"PENDING", "RUNNING"}), None)
+    latest = active or (jobs[0] if jobs else None)
     rows = await _stage_rows(session, latest.id) if latest else []
     return {"shipment_status": shipment.status, "job": serialize_job(latest, rows) if latest else None}
 
@@ -116,10 +122,14 @@ async def shipment_progress(shipment_id: int, session: AsyncSession = Depends(ge
 @router.get("/shipments/{shipment_id}/jobs")
 async def list_jobs(shipment_id: int, session: AsyncSession = Depends(get_session)):
     jobs = (
-        await session.execute(select(Job).order_by(Job.id.desc()).limit(50))
+        await session.execute(
+            select(Job)
+            .where(Job.payload["shipment_id"].as_integer() == shipment_id)
+            .order_by(Job.id.desc())
+            .limit(50)
+        )
     ).scalars().all()
     return [
         {"id": j.id, "kind": j.kind, "status": j.status, "attempts": j.attempts, "error": j.error}
         for j in jobs
-        if (j.payload or {}).get("shipment_id") == shipment_id
     ]

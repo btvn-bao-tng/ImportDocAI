@@ -42,11 +42,13 @@ const TRANSPORT_KEYS: { key: string; label: string }[] = [
   { key: "transport.gross_weight_kg", label: "Trọng lượng cả bì (kg)" },
 ];
 
+// Keys must match the backend's extracted field keys (services/fields.py): party
+// fields are `party.<role>` / `party.<role>.address`, not `parties.*`.
 const PARTY_KEYS: { key: string; label: string }[] = [
-  { key: "parties.seller_name", label: "Người bán" },
-  { key: "parties.buyer_name", label: "Người mua" },
-  { key: "parties.seller_address", label: "Địa chỉ người bán" },
-  { key: "parties.buyer_address", label: "Địa chỉ người mua" },
+  { key: "party.seller", label: "Người bán" },
+  { key: "party.buyer", label: "Người mua" },
+  { key: "party.seller.address", label: "Địa chỉ người bán" },
+  { key: "party.buyer.address", label: "Địa chỉ người mua" },
 ];
 
 function findField(fields: FieldRow[], key: string): FieldRow | undefined {
@@ -85,14 +87,14 @@ function rowFromField(key: string, label: string, field: FieldRow | undefined): 
 
 function lineRows(item: LineItemRow): PreviewRow[] {
   const base = `line_items[${item.seq}]`;
-  const toRow = (key: string, label: string, fallback: string | null): PreviewRow => {
+  const toRow = (key: string, label: string, fallback: string | null, unitFallback: string | null = null): PreviewRow => {
     const field = findField(item.fields, key);
     return {
       key: `${base}.${key}`,
       target: `${base}.${key}`,
       label,
       value: field?.normalized_value ?? field?.raw_value ?? fallback ?? "",
-      unit: field?.unit ?? null,
+      unit: field?.unit ?? unitFallback,
       sourcePage: field?.page ?? null,
       critical: field?.critical ?? true,
       reviewStatus: field?.review_status ?? null,
@@ -101,9 +103,9 @@ function lineRows(item: LineItemRow): PreviewRow[] {
   };
 
   return [
-    toRow("description", "Diễn giải", item.description),
-    toRow("quantity", "Số lượng", item.quantity),
-    toRow("amount", "Thành tiền", item.amount),
+    toRow("line.description", "Diễn giải", item.description),
+    toRow("line.quantity", "Số lượng", item.quantity, item.unit),
+    toRow("line.amount", "Thành tiền", item.amount),
   ];
 }
 
@@ -188,39 +190,37 @@ function TemplateCellPreview({ preview }: { preview: TemplatePreviewResponse }) 
                   </>
                 }
               >
-                  <tbody>
-                    {sheet.cells.map(([ref, cell]) => (
-                      <tr key={`${sheet.name}-${ref}`} className="border-t border-divider">
-                        <td className={`${CELL} type-fine-print w-16 whitespace-nowrap text-ink-48`}>{ref}</td>
-                        <td className={`${CELL} type-caption min-w-[160px] text-ink-80`}>
-                          {cell.evidence?.label_vi ?? fieldLabel(cell.field)}
-                        </td>
-                        <td className={`${CELL} type-body-strong text-ink`}>{valueOrDash(cell.value)}</td>
-                        <td className={`${CELL} type-caption text-ink-48`}>
-                          {cell.evidence ? (
-                            <span>
-                              {cell.evidence.filename}
-                              {cell.evidence.page ? ` · trang ${cell.evidence.page}` : ""}
-                              {cell.evidence.cell_ref ? ` · ${cell.evidence.cell_ref}` : ""}
-                            </span>
-                          ) : (
-                            <span className="text-warning">Không lưu nguồn</span>
-                          )}
-                        </td>
-                        <td className={CELL}>
-                          {cell.evidence ? (
-                            cell.evidence.review_status === "CONFIRMED" ? (
-                              <LocalizedStatus tone="green">Đã xác nhận</LocalizedStatus>
-                            ) : (
-                              <LocalizedStatus tone="red">Cần xem lại</LocalizedStatus>
-                            )
-                          ) : (
-                            <LocalizedStatus tone="red">Cần xem lại</LocalizedStatus>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
+                {sheet.cells.map(([ref, cell]) => (
+                  <tr key={`${sheet.name}-${ref}`} className="border-t border-divider">
+                    <td className={`${CELL} type-fine-print w-16 whitespace-nowrap text-ink-48`}>{ref}</td>
+                    <td className={`${CELL} type-caption min-w-[160px] text-ink-80`}>
+                      {cell.evidence?.label_vi ?? fieldLabel(cell.field)}
+                    </td>
+                    <td className={`${CELL} type-body-strong text-ink`}>{valueOrDash(cell.value)}</td>
+                    <td className={`${CELL} type-caption text-ink-48`}>
+                      {cell.evidence ? (
+                        <span>
+                          {cell.evidence.filename}
+                          {cell.evidence.page ? ` · trang ${cell.evidence.page}` : ""}
+                          {cell.evidence.cell_ref ? ` · ${cell.evidence.cell_ref}` : ""}
+                        </span>
+                      ) : (
+                        <span className="text-warning">Không lưu nguồn</span>
+                      )}
+                    </td>
+                    <td className={CELL}>
+                      {cell.evidence ? (
+                        cell.evidence.review_status === "CONFIRMED" ? (
+                          <LocalizedStatus tone="green">Đã xác nhận</LocalizedStatus>
+                        ) : (
+                          <LocalizedStatus tone="red">Cần xem lại</LocalizedStatus>
+                        )
+                      ) : (
+                        <LocalizedStatus tone="red">Cần xem lại</LocalizedStatus>
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </Table>
               </div>
             </section>

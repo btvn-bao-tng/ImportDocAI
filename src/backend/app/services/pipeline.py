@@ -40,9 +40,11 @@ def _release_shipment_lock_if_idle(shipment_id: int) -> None:
 
 
 # Field families that never own a review-store LineItem: their rows are either
-# declaration-level child tables (license/instruction/adjustment) or attach to the
-# goods line (goods_tax uses the compound line_index below).
-NO_LINE_ITEM_PREFIXES = ("goods_tax.", "license.", "instruction.", "adjustment.")
+# declaration-level child tables (tax/license/instruction/adjustment) or attach to
+# the goods line (goods_tax uses the compound line_index below). Without "tax." here
+# a declaration's summary tax rows would attach to (and, when outnumbering the goods
+# lines, spawn) goods LineItems.
+NO_LINE_ITEM_PREFIXES = ("tax.", "goods_tax.", "license.", "instruction.", "adjustment.")
 
 # goods_tax.* rows encode their position as goods_seq * 100 + tax_slot so one flat
 # line_index column can address "tax slot k of goods line n". Decoded identically in
