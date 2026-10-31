@@ -43,10 +43,10 @@ ENV IMPORTDOC_CONFIG=/app/config.yml \
     DATA_DIR=/app/data/storage \
     DATABASE_URL=sqlite+aiosqlite:////app/data/app.db
 
-EXPOSE 8000
+EXPOSE 8012
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1
+  CMD curl -fsS http://127.0.0.1:8012/api/v1/health || exit 1
 
 # API by default; compose overrides `command` with `python -m app.worker` for the worker.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8012", "--proxy-headers"]

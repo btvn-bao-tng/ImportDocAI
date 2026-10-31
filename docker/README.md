@@ -21,12 +21,12 @@ cd docker
 export BIOTURING_API_KEY=sk-...
 
 docker compose up -d --build
-open http://localhost:8080            # IMPORTDOC_HTTP_PORT overrides 8080
+open http://localhost:4009            # IMPORTDOC_HTTP_PORT overrides 4009
 ```
 
 | Service   | Port | Notes |
 |-----------|------|-------|
-| frontend  | 8080 | nginx: SPA + `/api/` → `backend:8000` |
+| frontend  | 4009 | nginx: SPA + `/api/` → `backend:8012` |
 | backend   | —    | internal only; `/api/v1/health` used for healthcheck |
 | worker    | —    | `python -m app.worker`, starts once the API is healthy |
 
@@ -56,7 +56,7 @@ Settings resolve as **environment > `config.yml`** (see `src/backend/app/config.
 | `BIOTURING_BASE_URL` | `https://hy-llm.bioturing.com/v1` | OpenAI-compatible endpoint |
 | `BIOTURING_TEXT_MODEL` / `BIOTURING_VISION_MODEL` | `sonya` / `vision_sonya` | model names |
 | `MAX_TOKENS` | `32000` | per-request cap |
-| `IMPORTDOC_HTTP_PORT` | `8080` | host port for the frontend |
+| `IMPORTDOC_HTTP_PORT` | `4009` | host port for the frontend |
 
 Paths inside the container are fixed: `DATA_DIR=/app/data/storage`,
 `DATABASE_URL=sqlite+aiosqlite:////app/data/app.db`. Back them by the volume, not by a
