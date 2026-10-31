@@ -241,14 +241,18 @@ async def test_tokhai_export_endpoint(client: AsyncClient):
     assert report.status_code == 200
 
 
-async def test_tokhai_export_requires_declaration_data(client: AsyncClient):
+async def test_tokhai_export_without_declaration_returns_draft_template(client: AsyncClient):
     res = await client.post("/api/v1/shipments", json={"code": "TKNEMPTY"})
     shipment_id = res.json()["id"]
     res = await client.post(
         f"/api/v1/shipments/{shipment_id}/exports", json={"template_version": "tokhai_import_v1"}
     )
-    assert res.status_code == 422
-    assert "tờ khai" in res.json()["detail"].lower()
+    assert res.status_code == 201
+    body = res.json()
+    assert body["mode"] == "DRAFT"
+    assert body["missing"]
+    download = await client.get(f"/api/v1/exports/{body['id']}/download")
+    assert download.status_code == 200
 
 
 async def test_progress_endpoint_reports_stage_plan(client: AsyncClient):

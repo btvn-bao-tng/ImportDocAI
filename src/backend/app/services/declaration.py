@@ -20,6 +20,7 @@ from ..models import (
     DeclarationLicense,
     DeclarationTaxLine,
     Document,
+    ExtractedField,
     GoodsLine,
     GoodsTaxLine,
 )
@@ -148,6 +149,50 @@ async def build_declaration_payload(session: AsyncSession, shipment_id: int) -> 
         instructions=instructions,
         adjustments=adjustments,
     )
+
+
+async def build_declaration_payload_from_fields(session: AsyncSession, shipment_id: int) -> DeclarationPayload:
+    """Fallback payload built straight from extracted fields when no Declaration row exists.
+
+    The export then still returns the template file with every matching extracted
+    `declaration.*` value filled in (DRAFT mode); goods lines are only ever sourced
+    from a real customs-declaration extraction. The first document that states a
+    field wins, with customs-declaration documents ranked ahead of the rest.
+    """
+    docs = (
+        await session.execute(select(Document).where(Document.shipment_id == shipment_id).order_by(Document.id))
+    ).scalars().all()
+    ranked = sorted(docs, key=lambda d: (not d.doc_type.startswith("CUSTOMS_DECLARATION"), d.id))
+
+    header: dict[str, str | None] = {}
+    sources: dict[str, FieldSource] = {}
+    for doc in ranked:
+        fields = (
+            await session.execute(
+                select(ExtractedField).where(
+                    ExtractedField.document_id == doc.id,
+                    ExtractedField.field_key.like("declaration.%"),
+                    ExtractedField.line_item_id.is_(None),
+                )
+            )
+        ).scalars().all()
+        for f in fields:
+            if f.field_key in header:
+                continue
+            value = f.normalized_value if f.normalized_value is not None else f.raw_value
+            if value in (None, ""):
+                continue
+            header[f.field_key] = value
+            sources[f.field_key] = FieldSource(
+                document_filename=doc.filename,
+                document_id=doc.id,
+                page=f.page,
+                cell_ref=f.cell_ref,
+                provenance_type=f.provenance_type,
+                review_status=f.review_status,
+                grounding_verified=f.grounding_verified,
+            )
+    return DeclarationPayload(header=header, goods=[], taxes=[], sources=sources)
 
 
 async def upsert_declaration(

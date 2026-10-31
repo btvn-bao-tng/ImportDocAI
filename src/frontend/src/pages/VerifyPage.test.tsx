@@ -98,7 +98,7 @@ describe("VerifyPage", () => {
       filled: 2,
       missing: [],
       warnings: [],
-      filename: "LS2628_verify_sheet_v1_FINAL_20260101_120000.xlsx",
+      filename: "LS2628_tokhai_import_v1_FINAL_20260101_120000.xlsx",
     });
   });
 
@@ -106,7 +106,7 @@ describe("VerifyPage", () => {
     renderPage();
 
     await screen.findByRole("heading", { name: "File Excel cuối cùng" });
-    expect(createExport).toHaveBeenCalledWith(1, "verify_sheet_v1");
+    expect(createExport).toHaveBeenCalledWith(1, "tokhai_import_v1");
     expect(screen.getByRole("link", { name: "Tải file Excel" }).getAttribute("href")).toBe(
       "/api/v1/exports/7/download",
     );

@@ -28,7 +28,7 @@ interface EvidenceTarget {
   label: string;
 }
 
-const VERIFY_TEMPLATE = "verify_sheet_v1";
+const VERIFY_TEMPLATE = "tokhai_import_v1";
 const CARD = "rounded-lg border border-hairline bg-canvas";
 const CELL = "py-2.5 pr-4 align-top";
 

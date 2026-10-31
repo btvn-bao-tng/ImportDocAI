@@ -6,7 +6,7 @@ import { api } from "../api/client";
 import type { DocumentSummary } from "../api/types";
 import { Callout, EmptyState, Spinner } from "./ui";
 
-GlobalWorkerOptions.workerSrc = workerSrc;
+GlobalWorkerOptions.workerSrc = `${workerSrc}?v=2`;
 
 interface EvidenceTarget {
   documentId: number;
@@ -79,10 +79,6 @@ function PdfViewer({ docId, evidence }: PdfViewerProps) {
   const highlightPage = evidence?.documentId === docId ? evidence.page : null;
   const highlightBox = evidence?.documentId === docId ? evidence.bbox : null;
 
-  useEffect(() => {
-    if (!highlightPage) return;
-    scrollWithinContainer(pageRefs.current[highlightPage] ?? null);
-  }, [highlightPage]);
   const pdfQuery = useQuery({
     queryKey: ["pdf", "document", docId],
     queryFn: async () => {
@@ -103,6 +99,13 @@ function PdfViewer({ docId, evidence }: PdfViewerProps) {
       void task.destroy();
     };
   }, [pdfQuery.data]);
+
+  useEffect(() => {
+    if (!highlightPage) return;
+    const page = pageRefs.current[highlightPage] ?? null;
+    const highlightEl = page?.querySelector<HTMLElement>(`[data-testid="pdf-highlight-${highlightPage}"]`) ?? null;
+    scrollWithinContainer(highlightEl ?? page, "center");
+  }, [highlightPage, highlightBox, pdf]);
 
   if (resolvedError) {
     return (

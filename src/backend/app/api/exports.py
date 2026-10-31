@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..audit import record_audit
 from ..deps import get_settings, get_session
 from ..models import Document, ExportJob, ExtractedField, LineItem, Party, Shipment
-from ..services.declaration import build_declaration_payload
+from ..services.declaration import build_declaration_payload, build_declaration_payload_from_fields
 from ..services.export_tokhai import TOKHAI_TEMPLATE_VERSION, write_tokhai_export
 from ..services.linegroup import group_line_items
 from ..services.export_excel import (
@@ -247,10 +247,7 @@ async def create_export(
     if body.template_version == TOKHAI_TEMPLATE_VERSION:
         declaration_payload = await build_declaration_payload(session, shipment_id)
         if declaration_payload is None:
-            raise HTTPException(
-                422,
-                "Shipment chưa có dữ liệu tờ khai. Cần trích xuất Tờ khai hải quan trước khi xuất.",
-            )
+            declaration_payload = await build_declaration_payload_from_fields(session, shipment_id)
         try:
             token_outcome = write_tokhai_export(
                 shipment.code, declaration_payload, template_version=body.template_version, export_dir=export_dir
