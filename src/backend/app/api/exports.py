@@ -223,7 +223,7 @@ async def create_export(
     if shipment is None:
         raise HTTPException(404, "Không tìm thấy shipment")
 
-    export_dir = settings.data_dir.parent.parent / "exports" / shipment.code
+    export_dir = settings.data_dir.parent / "exports" / shipment.code
 
     if body.template_version == VERIFY_TEMPLATE_VERSION:
         preview = await verify_preview(shipment_id, session)
