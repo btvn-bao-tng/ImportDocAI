@@ -75,3 +75,32 @@ def test_wrong_model_locale_hint_cannot_corrupt_amount():
     assert parse_decimal("41,686.84", "comma_decimal") == Decimal("41686.84")
     assert parse_decimal("41.686,836", "period_decimal") == Decimal("41686.836")
     assert parse_decimal("26400.000", "comma_decimal") == Decimal("26400000")
+
+
+def test_vietnamese_grouped_numbers_parse_as_grouping():
+    """Two or more 3-digit dot groups are unambiguously thousands grouping.
+
+    A decimal separator appears at most once in any locale, so the grouping read
+    wins even against a wrong period-decimal document hint.
+    """
+    assert parse_decimal("607.301.890") == Decimal("607301890")
+    assert parse_decimal("607.301.890", "period_decimal") == Decimal("607301890")
+    assert parse_decimal("1.234.567") == Decimal("1234567")
+    assert parse_decimal("60.730.890") == Decimal("60730890")
+    assert parse_decimal("1.234.567,89") == Decimal("1234567.89")
+    assert parse_decimal("(607.301.890)") == Decimal("-607301890")
+
+
+def test_irregular_dot_patterns_never_parse():
+    """'1.2.3' is not a number in any convention; it must not become 123."""
+    assert parse_decimal("1.2.3") is None
+    assert parse_decimal("60.7301.890") is None
+    assert parse_decimal("1.234.567.8") is None
+    assert parse_decimal(".234.567") is None
+
+
+def test_single_trailing_group_stays_hint_driven():
+    """'38.030' with a period-decimal document means 38.03, not 38030 (and vice versa)."""
+    assert parse_decimal("38.030", "period_decimal") == Decimal("38.03")
+    assert parse_decimal("26400.000", "period_decimal") == Decimal("26400.000")
+    assert parse_decimal("1.180", "comma_decimal") == Decimal("1180")
