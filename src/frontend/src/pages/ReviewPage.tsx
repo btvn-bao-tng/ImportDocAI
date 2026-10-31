@@ -844,6 +844,7 @@ export default function ReviewPage() {
                       key={pane.key}
                       type="button"
                       aria-pressed={rightPane === pane.key}
+                      aria-controls="right-pane"
                       onClick={() => {
                         setRightPane(pane.key);
                       }}
@@ -986,6 +987,7 @@ export default function ReviewPage() {
             </div>
 
             <div
+              id="right-pane"
               className={`min-w-0 flex-1 lg:pl-0 ${
                 maximizedPanel === "source" ? "hidden" : ""
               }`}

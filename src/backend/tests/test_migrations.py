@@ -57,3 +57,61 @@ async def test_create_all_is_idempotent(tmp_path):
         "declaration_tax_lines",
         "jobs",
     } <= tables
+
+
+async def test_create_all_adds_unique_shipment_index_to_legacy_declarations(tmp_path):
+    """`INSERT ... ON CONFLICT (shipment_id)` needs the index on DB files that already exist."""
+    db = tmp_path / "legacy_unique.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE declarations (id INTEGER PRIMARY KEY, shipment_id INTEGER, declaration_no VARCHAR(64))")
+    con.execute("INSERT INTO declarations (shipment_id, declaration_no) VALUES (1, 'A')")
+    con.commit()
+    con.close()
+
+    init_engine(_settings(tmp_path, db))
+    await create_all()
+
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.services.declaration import get_declaration, upsert_declaration
+
+    async with session_scope() as session:
+        await upsert_declaration(
+            session,
+            shipment_id=1,
+            header={"declaration.declaration_no": "B"},
+            goods=[],
+            taxes=[],
+        )
+
+    await dispose()
+
+    con = sqlite3.connect(db)
+    indexes = {row[1] for row in con.execute("PRAGMA index_list(declarations)")}
+    rows = con.execute("SELECT COUNT(*), MAX(declaration_no) FROM declarations WHERE shipment_id = 1").fetchall()
+    con.close()
+    assert "uq_declaration_shipment" in indexes
+    assert rows == [(1, "B")]
+
+
+async def test_create_all_skips_unique_index_when_legacy_rows_are_duplicated(tmp_path, caplog):
+    """Prototype files with duplicate declarations must still start; the index is skipped."""
+    db = tmp_path / "legacy_dup.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE declarations (id INTEGER PRIMARY KEY, shipment_id INTEGER, declaration_no VARCHAR(64))")
+    con.executemany(
+        "INSERT INTO declarations (shipment_id, declaration_no) VALUES (?, ?)",
+        [(1, "A"), (1, "B")],
+    )
+    con.commit()
+    con.close()
+
+    init_engine(_settings(tmp_path, db))
+    await create_all()
+    await dispose()
+
+    con = sqlite3.connect(db)
+    indexes = {row[1] for row in con.execute("PRAGMA index_list(declarations)")}
+    con.close()
+    assert "uq_declaration_shipment" not in indexes

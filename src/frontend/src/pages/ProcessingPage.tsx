@@ -222,12 +222,10 @@ export default function ProcessingPage() {
   const percent = total > 0 ? Math.round((Math.min(done, total) / total) * 100) : 0;
   const stageSteps = progress ? [...progress.stages.map((s) => stageLabel(s)), stageLabel(progress.final_stage)] : [];
   const busy = documents.filter((doc) => docStage(progress, doc.id) !== null);
+  const busyIds = new Set(busy.map((doc) => doc.id));
   const queued = documents.filter(
     (doc) =>
-      !busy.includes(doc) &&
-      doc.status !== "EXTRACTED" &&
-      doc.status !== "FAILED" &&
-      !doc.error,
+      !busyIds.has(doc.id) && doc.status !== "EXTRACTED" && doc.status !== "FAILED" && !doc.error,
   );
   const finalizing = progress?.current_stage === progress?.final_stage;
   const currentStageIndex = finalizing ? progress?.stages.length ?? 0 : 0;

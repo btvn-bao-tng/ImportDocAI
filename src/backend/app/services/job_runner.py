@@ -5,12 +5,13 @@ import logging
 import os
 from typing import Awaitable, Callable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..audit import record_audit
 from ..db import session_scope
-from ..models import Document, ExtractedField, Job, Shipment
+from ..models import Document, ExtractedField, Job, JobDocumentStage, Shipment
 from .llm import LLMClient
 from . import pipeline
 
@@ -24,23 +25,27 @@ StageCallback = Callable[[int, str], Awaitable[None]]
 DOCUMENT_STAGES = ("PARSING", "CLASSIFYING", "EXTRACTING", "PERSISTING")
 FINAL_STAGE = "FINALIZING"
 
-# Documents of one job run concurrently. LLM calls are network-bound, so the wall clock
-# is close to the slowest file instead of the sum of all files.
+# Documents of one job run concurrently. The LLM calls are network-bound, so the wall
+# clock is close to the slowest file instead of the sum of all files.
 DEFAULT_PARALLEL_DOCUMENTS = 4
-MAX_PARALLEL_DOCUMENTS = DEFAULT_PARALLEL_DOCUMENTS
+# Hard ceiling: each in-flight file also holds a worker thread while its file is parsed.
+MAX_PARALLEL_LIMIT = 8
 
 
 def parallel_limit() -> int:
-    """Concurrency cap, overridable with MAX_PARALLEL_DOCUMENTS (1 = old sequential mode)."""
+    """Concurrency cap, overridable with MAX_PARALLEL_DOCUMENTS (1 = sequential mode)."""
     try:
-        return max(1, int(os.environ.get("MAX_PARALLEL_DOCUMENTS") or DEFAULT_PARALLEL_DOCUMENTS))
+        wanted = int(os.environ.get("MAX_PARALLEL_DOCUMENTS") or DEFAULT_PARALLEL_DOCUMENTS)
     except ValueError:
+        log.warning("MAX_PARALLEL_DOCUMENTS is not a number; using %s", DEFAULT_PARALLEL_DOCUMENTS)
         return DEFAULT_PARALLEL_DOCUMENTS
+    if wanted > MAX_PARALLEL_LIMIT:
+        log.warning("MAX_PARALLEL_DOCUMENTS=%s clamped to %s", wanted, MAX_PARALLEL_LIMIT)
+    return min(MAX_PARALLEL_LIMIT, max(1, wanted))
 
 
 async def _update_progress(job_id: int, **values) -> None:
-    """Overwrite job progress fields. Only called between files, never inside a per-file
-    stage update, so the values cannot be partially written."""
+    """Overwrite job progress fields. Only called between files, never per stage."""
     async with session_scope() as session:
         job = await session.get(Job, job_id)
         if job is None or job.status not in {"PENDING", "RUNNING"}:
@@ -49,47 +54,44 @@ async def _update_progress(job_id: int, **values) -> None:
             setattr(job, key, value)
 
 
-async def _set_document_stage(job_id: int, document_id: int, stage: str | None) -> None:
-    """Record the live stage of one file.
-
-    Files finish concurrently, so the row is read and written inside one transaction and
-    the completed count is derived from the stage map itself instead of being incremented
-    from a stale copy (two files finishing at once would otherwise lose an increment).
-    """
+# Live stages live in their own table, one row per in-flight file. SQLite has no row
+# locks (`with_for_update` compiles to a plain SELECT), so editing a shared JSON map
+# would lose entries when two files report at once; an upsert on a unique key cannot.
+# The map in the API response is projected from these rows, never stored twice.
+async def _set_document_stage(job_id: int, document_id: int, stage: str | None, attempt: int | None = None) -> None:
     async with session_scope() as session:
-        job = await session.get(Job, job_id, with_for_update=True)
+        job = await session.get(Job, job_id)
         if job is None or job.status not in {"PENDING", "RUNNING"}:
             return
-        stages = dict(job.document_stages or {})
-        if stage is None:
-            stages.pop(str(document_id), None)
-        else:
-            stages[str(document_id)] = stage
-        job.document_stages = stages
-        if stage is None:
-            job.document_done = (job.document_done or 0) + 1
-        else:
-            job.current_stage = stage
-            job.current_document_id = document_id
-
-
-async def _settle_progress(job_id: int, doc_ids: list[int], final_stage: str) -> None:
-    """Close the per-file bookkeeping once every file has returned.
-
-    Late stage writes from a file that just finished are reverted here, so the page
-    cannot keep showing a stage for a file the job already counted as done.
-    """
-    async with session_scope() as session:
-        job = await session.get(Job, job_id, with_for_update=True)
-        if job is None or job.status not in {"PENDING", "RUNNING"}:
+        if attempt is not None and attempt != job.attempts:
+            # A worker whose lease expired must not publish into the retry that replaced it.
             return
-        job.document_stages = {}
-        job.document_done = len(doc_ids)
-        job.document_total = len(doc_ids)
-        job.current_document_id = None
-        job.current_stage = final_stage
-
-
+        if stage is None:
+            await session.execute(
+                delete(JobDocumentStage).where(
+                    JobDocumentStage.job_id == job_id,
+                    JobDocumentStage.document_id == document_id,
+                )
+            )
+            done = (
+                await session.execute(
+                    select(func.count()).select_from(JobDocumentStage).where(JobDocumentStage.job_id == job_id)
+                )
+            ).scalar_one()
+            job.document_done = max(0, min(job.document_total, job.document_total - done))
+            job.current_stage = FINAL_STAGE
+            job.current_document_id = None
+            return
+        await session.execute(
+            sqlite_insert(JobDocumentStage)
+            .values(job_id=job_id, document_id=document_id, stage=stage, attempt=job.attempts)
+            .on_conflict_do_update(
+                index_elements=[JobDocumentStage.job_id, JobDocumentStage.document_id],
+                set_={"stage": stage},
+            )
+        )
+        job.current_stage = stage
+        job.current_document_id = document_id
 async def refresh_shipment_status(session: AsyncSession, shipment_id: int) -> None:
     shipment = await session.get(Shipment, shipment_id)
     if shipment is None:
@@ -133,6 +135,7 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
         if job is None or job.status == "DONE":
             return True
         payload = dict(job.payload or {})
+        attempt = job.attempts
         await session.commit()
 
     # Duplicate ids would run the same file twice and double-count it.
@@ -143,11 +146,12 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
         document_done=0,
         current_document_id=None,
         current_stage=None,
-        document_stages={},
     )
+    async with session_scope() as session:
+        await session.execute(delete(JobDocumentStage).where(JobDocumentStage.job_id == job_id))
 
     async def on_stage(doc_id: int, stage: str) -> None:
-        await _set_document_stage(job_id, doc_id, stage)
+        await _set_document_stage(job_id, doc_id, stage, attempt)
 
     async def run_document(doc_id: int) -> None:
         try:
@@ -159,7 +163,7 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
             log.exception("process job %s doc %s failed", job_id, doc_id)
             failures.append(f"doc {doc_id}: {exc}")
         finally:
-            await _set_document_stage(job_id, doc_id, None)
+            await _set_document_stage(job_id, doc_id, None, attempt)
 
     failures: list[str] = []
     if doc_ids:
@@ -171,7 +175,9 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
 
         await asyncio.gather(*(run_limited(doc_id) for doc_id in doc_ids))
 
-    await _settle_progress(job_id, doc_ids, FINAL_STAGE)
+    async with session_scope() as session:
+        await session.execute(delete(JobDocumentStage).where(JobDocumentStage.job_id == job_id))
+    await _update_progress(job_id, current_document_id=None, current_stage=FINAL_STAGE)
 
     async with session_scope() as session:
         shipment_id = payload.get("shipment_id")

@@ -156,7 +156,7 @@ async def test_run_process_job_tracks_document_progress(job_db, monkeypatch):
         assert job.document_total == 2
         assert job.document_done == 2
         assert job.current_stage == "FINALIZING"
-        assert job.document_stages == {}
+        assert await _live_stages(session, job_id) == {}
 
 
 async def test_run_process_job_runs_documents_in_parallel(job_db, monkeypatch):
@@ -186,44 +186,64 @@ async def test_run_process_job_runs_documents_in_parallel(job_db, monkeypatch):
     async with job_db() as session:
         job = await session.get(Job, job_id)
         assert job.document_done == 2
-        assert job.document_stages == {}
+        assert await _live_stages(session, job_id) == {}
+
+
+async def _live_stages(session, job_id: int) -> dict[str, str]:
+    from sqlalchemy import select
+
+    from app.models import JobDocumentStage
+
+    rows = (await session.execute(select(JobDocumentStage).where(JobDocumentStage.job_id == job_id))).scalars()
+    return {str(row.document_id): row.stage for row in rows}
 
 
 async def test_parallel_files_do_not_lose_stage_or_done_updates(job_db, monkeypatch):
-    """Every file publishes stages under concurrency: no entry and no completion may be lost."""
+    """Every file publishes stages concurrently: no stage row and no completion may be lost."""
     import asyncio
 
     from app.services import job_runner, pipeline
 
     doc_ids = list(range(1, 9))
+    concurrent_peak = 0
+    in_flight = 0
 
     async def fake_process(session, llm, document_id, force=False, on_stage=None):
-        for stage in ("PARSING", "CLASSIFYING", "EXTRACTING"):
-            await on_stage(document_id, stage)
-            await asyncio.sleep(0)
+        nonlocal concurrent_peak, in_flight
+        in_flight += 1
+        concurrent_peak = max(concurrent_peak, in_flight)
+        try:
+            for stage in ("PARSING", "CLASSIFYING", "EXTRACTING"):
+                await on_stage(document_id, stage)
+                await asyncio.sleep(0)
+        finally:
+            in_flight -= 1
 
     monkeypatch.setattr(pipeline, "process_document", fake_process)
-    seen: set[str] = set()
-
     async with job_db() as session:
         session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": doc_ids}, idempotency_key="many"))
     job_id = await worker.claim_job()
 
+    # Another file can finish between two independent reads, so the invariant is
+    # "never higher than the number of files" plus the end state below.
     original = job_runner._set_document_stage
+    observed: list[int] = []
 
-    async def spy(job, document_id, stage):
-        if stage is not None:
-            seen.add(str(document_id))
-        await original(job, document_id, stage)
+    async def spy(job, document_id, stage, attempt=None):
+        await original(job, document_id, stage, attempt)
+        if stage is None:
+            async with job_db() as session:
+                observed.append((await session.get(Job, job)).document_done)
 
     monkeypatch.setattr(job_runner, "_set_document_stage", spy)
     assert await job_runner.run_process_job(job_id, llm=None) is True
-    assert seen == {str(i) for i in doc_ids}
+    assert concurrent_peak > 1
+    assert observed and max(observed) <= len(doc_ids)
     async with job_db() as session:
         job = await session.get(Job, job_id)
         assert job.document_done == len(doc_ids)
         assert job.document_total == len(doc_ids)
-        assert job.document_stages == {}
+        assert await _live_stages(session, job_id) == {}
         assert job.current_stage == "FINALIZING"
 
 
@@ -252,21 +272,23 @@ async def test_document_stages_are_recorded_per_file(job_db):
     from app.services import job_runner
 
     async with job_db() as session:
-        session.add(Job(kind="PROCESS_DOCUMENTS", payload={}, idempotency_key="stg"))
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": [31, 32]}, idempotency_key="stg"))
     job_id = await worker.claim_job()
+    async with job_db() as session:
+        (await session.get(Job, job_id)).document_total = 2
 
     await job_runner._set_document_stage(job_id, 31, "PARSING")
     await job_runner._set_document_stage(job_id, 32, "CLASSIFYING")
     async with job_db() as session:
         job = await session.get(Job, job_id)
-        assert job.document_stages == {"31": "PARSING", "32": "CLASSIFYING"}
+        assert await _live_stages(session, job_id) == {"31": "PARSING", "32": "CLASSIFYING"}
         assert job.document_done == 0
         assert job.current_document_id == 32
 
     await job_runner._set_document_stage(job_id, 31, None)
     async with job_db() as session:
         job = await session.get(Job, job_id)
-        assert job.document_stages == {"32": "CLASSIFYING"}
+        assert await _live_stages(session, job_id) == {"32": "CLASSIFYING"}
         assert job.document_done == 1
 
 

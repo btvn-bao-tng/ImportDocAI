@@ -19,7 +19,9 @@ import {
   TableHeadCell,
 } from "../components/ui";
 
-const DEFAULT_TEMPLATE = "uandi_import_v1";
+// The Mẫu tờ khai cuối form is the deliverable for a customs shipment: it is pre-selected
+// so exporting fills it and offers the workbook, without hunting through the dropdown.
+const DEFAULT_TEMPLATE = "tokhai_import_v1";
 
 type TemplateRow = Awaited<ReturnType<typeof api.listTemplates>>[number];
 type CreateExportResult = Awaited<ReturnType<typeof api.createExport>>;

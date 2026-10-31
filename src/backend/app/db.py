@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from .config import Settings
 from .models import Base
+
+log = logging.getLogger("importdoc.db")
 
 _engine = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -68,6 +71,7 @@ async def create_all() -> None:
         await conn.run_sync(Base.metadata.create_all)
         if engine.dialect.name == "sqlite":
             await conn.run_sync(_add_missing_columns)
+            await conn.run_sync(_add_missing_unique_indexes)
 
 
 def _add_missing_columns(sync_conn) -> None:
@@ -88,6 +92,35 @@ def _add_missing_columns(sync_conn) -> None:
                 )
             col_type = column.type.compile(dialect=sync_conn.dialect)
             sync_conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN {column.name} {col_type}'))
+
+
+# Unique keys that newer code relies on for `INSERT ... ON CONFLICT` and that `create_all`
+# never adds to a table that already exists. On a fresh file `create_all` has already
+# created them, so this is a no-op there.
+_REQUIRED_UNIQUE_INDEXES = (("uq_declaration_shipment", "declarations", "shipment_id"),)
+
+
+def _add_missing_unique_indexes(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    for name, table, column in _REQUIRED_UNIQUE_INDEXES:
+        if table not in existing_tables:
+            continue
+        if any(index["name"] == name for index in inspector.get_indexes(table)):
+            continue
+        duplicates = sync_conn.execute(
+            text(f"SELECT COUNT(*) FROM (SELECT {column} FROM {table} GROUP BY {column} HAVING COUNT(*) > 1)")
+        ).scalar_one()
+        if duplicates:
+            # Legacy files may already hold duplicate rows; leave them to a real migration
+            # instead of failing every startup.
+            log.warning(
+                "không tạo được unique index %s: bảng %s còn %s giá trị %s trùng", name, table, duplicates, column
+            )
+            continue
+        sync_conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {table} ({column})"))
 
 
 async def dispose() -> None:

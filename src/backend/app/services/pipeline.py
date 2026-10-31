@@ -18,6 +18,25 @@ from .llm import LLMClient, LLMError
 
 log = logging.getLogger("importdoc.pipeline")
 
+# Files of one job are processed concurrently, but the Tờ khai mirror is shipment-wide
+# (one Declaration per shipment, no unique key to lean on). Two declaration files
+# finishing together would otherwise both insert one, so the mirror runs under a lock.
+_DECLARATION_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _shipment_lock(shipment_id: int) -> asyncio.Lock:
+    lock = _DECLARATION_LOCKS.get(shipment_id)
+    if lock is None:
+        lock = _DECLARATION_LOCKS[shipment_id] = asyncio.Lock()
+    return lock
+
+
+def _release_shipment_lock_if_idle(shipment_id: int) -> None:
+    lock = _DECLARATION_LOCKS.get(shipment_id)
+    if lock is not None and not lock.locked():
+        _DECLARATION_LOCKS.pop(shipment_id, None)
+
+
 # Field families that never own a review-store LineItem: their rows are either
 # declaration-level child tables (license/instruction/adjustment) or attach to the
 # goods line (goods_tax uses the compound line_index below).
@@ -83,7 +102,16 @@ async def process_document(
         await stage("PERSISTING")
         await _clear_extraction(session, doc)
         await _persist(session, doc, rows)
-        await _persist_declaration(session, doc, rows)
+        # Files of one job run in parallel, so the shipment-wide Tờ khai mirror is
+        # serialised. Commit first: holding SQLite's write lock while awaiting another
+        # coroutine would make the sibling fail with "database is locked".
+        await session.commit()
+        try:
+            async with _shipment_lock(doc.shipment_id):
+                await _persist_declaration(session, doc, rows)
+                await session.commit()
+        finally:
+            _release_shipment_lock_if_idle(doc.shipment_id)
         doc.status = "EXTRACTED"
         doc.error = None
         record_audit(

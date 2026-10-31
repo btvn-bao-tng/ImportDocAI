@@ -165,16 +165,32 @@ describe("ExportPage", () => {
   });
 
   it("renders the template version and shows missing fields after export", async () => {
+    listTemplates.mockResolvedValue([
+      {
+        version: "tokhai_import_v1",
+        name: "Tờ khai hải quan",
+        sheets: ["TKN", "HANG"],
+        file_code_prefix: "TOKHAI",
+      },
+      {
+        version: "uandi_import_v1",
+        name: "Biểu mẫu nhập khẩu U&I",
+        sheets: ["PACKING LIST", "INVOICE", "HOP DONG"],
+        file_code_prefix: "uandi",
+      },
+    ]);
     renderPage();
 
-    expect((await screen.findByText("uandi_import_v1 — Biểu mẫu nhập khẩu U&I")).textContent).toContain(
-      "uandi_import_v1",
+    expect((await screen.findByText("tokhai_import_v1 — Tờ khai hải quan")).textContent).toContain(
+      "tokhai_import_v1",
     );
-    expect(await screen.findByText("packing-list.pdf")).toBeTruthy();
+    // The declaration template previews the filled Mẫu tờ khai cells, not the per-document list.
+    expect(await screen.findByText("Số tờ khai")).toBeTruthy();
+    expect(await screen.findByText("108299395961")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Tạo file Excel" }));
 
-    await waitFor(() => expect(createExport).toHaveBeenCalledWith(1, "uandi_import_v1"));
+    await waitFor(() => expect(createExport).toHaveBeenCalledWith(1, "tokhai_import_v1"));
 
     const missingTitle = await screen.findByText("Trường thiếu nguồn — không tự điền");
     const missingAlert = missingTitle.closest("[role='alert']");
@@ -212,9 +228,8 @@ describe("ExportPage", () => {
     await waitFor(() => {
       const select = screen.getByLabelText("Mẫu Excel") as HTMLSelectElement;
       expect(select.disabled).toBe(false);
-      expect(select.value).toBe("uandi_import_v1");
+      expect(select.value).toBe("tokhai_import_v1");
     });
-    fireEvent.change(screen.getByLabelText("Mẫu Excel"), { target: { value: "tokhai_import_v1" } });
 
     await waitFor(() => expect(templatePreview).toHaveBeenCalledWith(1, "tokhai_import_v1"));
     expect(await screen.findByText("Trường dữ liệu")).toBeTruthy();
