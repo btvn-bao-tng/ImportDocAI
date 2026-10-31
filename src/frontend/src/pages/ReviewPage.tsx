@@ -14,7 +14,10 @@ import {
   Section,
   Spinner,
   StatusBadge,
+  Table,
+  TableHeadCell,
 } from "../components/ui";
+import type { Tone } from "../components/ui";
 
 const DEFAULT_TEMPLATE = "tokhai_import_v1";
 
@@ -188,6 +191,172 @@ function TemplateSheetTable({ sheet, cells, selectedField, onValueClick }: Templ
   );
 }
 
+interface ReviewFieldRow {
+  key: string;
+  field: FieldRow | null;
+  label: string;
+  value: string;
+  unit: string | null;
+  page: number | null;
+  cellRef: string | null;
+  scope: string | null;
+}
+
+function rowsForDocument(doc: DocumentExtraction): ReviewFieldRow[] {
+  const own: ReviewFieldRow[] = doc.fields.map((field) => ({
+    key: `field-${field.id}`,
+    field,
+    label: field.label_vi,
+    value: field.normalized_value ?? field.raw_value ?? "",
+    unit: field.unit,
+    page: field.page,
+    cellRef: field.cell_ref,
+    scope: null,
+  }));
+  const lineItems: ReviewFieldRow[] = doc.line_items.flatMap((item) =>
+    item.fields.map((field) => ({
+      key: `line-${item.seq}-${field.id}`,
+      field,
+      label: field.label_vi,
+      value: field.normalized_value ?? field.raw_value ?? "",
+      unit: field.unit,
+      page: field.page,
+      cellRef: field.cell_ref,
+      scope: `Dòng hàng ${item.seq}`,
+    })),
+  );
+  return [...own, ...lineItems];
+}
+
+function reviewTone(field: FieldRow | null): Tone {
+  if (field === null) return "red";
+  if (field.review_status === "CONFIRMED") return "green";
+  return field.critical ? "red" : "gray";
+}
+
+function reviewLabel(field: FieldRow | null): string {
+  if (field === null) return "Cần xem lại";
+  if (field.review_status === "CONFIRMED") return "Đã xác nhận";
+  return field.critical ? "Cần xem lại" : "Chưa xem";
+}
+
+interface ExtractionViewerProps {
+  doc: DocumentExtraction | null;
+  selectedField: string | null;
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
+  onRowClick: (row: ReviewFieldRow) => void;
+}
+
+function ExtractionViewer({ doc, selectedField, maximized = false, onToggleMaximize, onRowClick }: ExtractionViewerProps) {
+  const rows = useMemo(() => (doc ? rowsForDocument(doc) : []), [doc]);
+  const openCount = rows.filter((row) => reviewTone(row.field) === "red").length;
+
+  return (
+    <section
+      aria-label="Giá trị trích xuất"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-hairline bg-canvas"
+    >
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-divider px-3 py-2">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 className="type-caption-strong shrink-0 text-ink">Giá trị trích xuất</h2>
+          <p className="type-fine-print truncate text-ink-48" title={doc?.document.filename}>
+            {doc?.document.filename ?? "Chưa chọn chứng từ"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <p className="type-fine-print text-ink-48">{rows.length} trường · bấm để xem nguồn</p>
+          {onToggleMaximize ? (
+            <button
+              type="button"
+              onClick={onToggleMaximize}
+              aria-pressed={maximized}
+              title={maximized ? "Thu nhỏ khung dữ liệu" : "Mở rộng khung dữ liệu"}
+              className="type-fine-print rounded-full border border-hairline px-2 py-0.5 text-ink-48 active:scale-95"
+            >
+              {maximized ? "Thu nhỏ" : "Mở rộng"}
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      <div className="flex shrink-0 items-center gap-2 border-b border-divider px-3 py-1.5">
+        <LocalizedStatus tone={openCount > 0 ? "red" : "green"}>
+          {openCount > 0 ? `${openCount} cần xem lại` : "Đã xử lý xong"}
+        </LocalizedStatus>
+        <p className="type-fine-print min-w-0 flex-1 truncate text-right text-ink-48">
+          {rows.length > 0 ? "Bấm một dòng để đánh dấu nguồn ở cột trái." : "Chứng từ này chưa có dữ liệu trích xuất."}
+        </p>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {doc && doc.document.error ? (
+          <div className="px-4 py-3">
+            <Callout tone="critical">{doc.document.error}</Callout>
+          </div>
+        ) : null}
+        {rows.length === 0 ? (
+          <div className="px-4 py-4">
+            <EmptyState title="Chưa có dữ liệu trích xuất" description="Chứng từ này chưa được trích xuất thành công." />
+          </div>
+        ) : (
+          <div className="px-4 pb-2">
+            <Table
+              minWidth={620}
+              head={
+                <tr>
+                  <TableHeadCell>Trường</TableHeadCell>
+                  <TableHeadCell>Giá trị</TableHeadCell>
+                  <TableHeadCell>Vị trí</TableHeadCell>
+                  <TableHeadCell>Trạng thái</TableHeadCell>
+                </tr>
+              }
+            >
+              {rows.map((row) => {
+                const active = row.field !== null && row.field.field_key === selectedField;
+                const openRow = () => onRowClick(row);
+                return (
+                  <tr
+                    key={row.key}
+                    tabIndex={0}
+                    aria-label={`${row.label}: ${row.value || "chưa có giá trị"}`}
+                    className={`cursor-pointer border-t border-divider transition-colors hover:bg-pearl focus:outline-none focus-visible:bg-pearl ${
+                      active ? "bg-[#eaf2fd]" : ""
+                    }`}
+                    onClick={openRow}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openRow();
+                      }
+                    }}
+                  >
+                    <td className="py-2.5 pr-4 align-top">
+                      <span className="type-caption-strong text-ink">{row.label}</span>
+                      <code className="type-fine-print mt-0.5 block text-ink-48">{row.field?.field_key}</code>
+                      {row.scope ? <span className="type-fine-print block text-ink-48">{row.scope}</span> : null}
+                    </td>
+                    <td className="type-body py-2.5 pr-4 align-top tabular-nums text-ink-80">
+                      {row.value?.trim() ? row.value : <span className="text-warning">—</span>}
+                      {row.unit ? <span className="type-caption ml-1 text-ink-48">{row.unit}</span> : null}
+                    </td>
+                    <td className="type-caption py-2.5 pr-4 align-top whitespace-nowrap text-ink-48">
+                      {row.cellRef ?? (row.page ? `Trang ${row.page}` : "—")}
+                    </td>
+                    <td className="py-2.5 pr-0 align-top">
+                      <LocalizedStatus tone={reviewTone(row.field)}>{reviewLabel(row.field)}</LocalizedStatus>
+                    </td>
+                  </tr>
+                );
+              })}
+            </Table>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 interface TemplateViewerProps {
   shipmentId: number;
   version: string;
@@ -196,6 +365,7 @@ interface TemplateViewerProps {
   maximized?: boolean;
   onToggleMaximize?: () => void;
   onValueClick: (cellRef: string, cell: TemplateCell, sheet: string) => void;
+  onBack: () => void;
 }
 
 function TemplateViewer({
@@ -206,6 +376,7 @@ function TemplateViewer({
   maximized = false,
   onToggleMaximize,
   onValueClick,
+  onBack,
 }: TemplateViewerProps) {
   const previewQuery = useQuery({
     queryKey: ["template-preview", shipmentId, version],
@@ -257,6 +428,13 @@ function TemplateViewer({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onBack}
+            className="type-fine-print rounded-full border border-hairline px-2 py-0.5 text-action active:scale-95"
+          >
+            ← Giá trị trích xuất
+          </button>
           <div className="flex items-center gap-1" role="group" aria-label="Thu phóng mẫu">
             <button
               type="button"
@@ -428,7 +606,8 @@ export default function ReviewPage() {
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
   const [evidenceField, setEvidenceField] = useState<string | null>(null);
   const [evidenceNotice, setEvidenceNotice] = useState<string | null>(null);
-  const [maximizedPanel, setMaximizedPanel] = useState<"source" | "template" | null>(null);
+  const [maximizedPanel, setMaximizedPanel] = useState<"source" | "right" | null>(null);
+  const [rightPane, setRightPane] = useState<"extraction" | "template">("extraction");
   const splitRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
 
@@ -516,6 +695,24 @@ export default function ReviewPage() {
       bbox: ev.bbox,
       cellRef: ev.cell_ref,
       label: ev.label_vi,
+    });
+  }
+
+  function handleExtractionRowClick(doc: DocumentExtraction, row: ReviewFieldRow) {
+    setEvidenceField(row.field?.field_key ?? null);
+    setActiveDocId(doc.document.id);
+    if (!row.field) {
+      setEvidence(null);
+      setEvidenceNotice(null);
+      return;
+    }
+    setEvidenceNotice(null);
+    setEvidence({
+      documentId: doc.document.id,
+      page: row.page,
+      bbox: row.field.bbox,
+      cellRef: row.cellRef,
+      label: row.label,
     });
   }
 
@@ -632,6 +829,32 @@ export default function ReviewPage() {
                 ) : null}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-3 lg:flex-1 lg:justify-end">
+                <div
+                  role="group"
+                  aria-label="Chọn nội dung khung phải"
+                  className="flex shrink-0 items-center gap-1 rounded-pill border border-hairline bg-canvas p-0.5"
+                >
+                  {(
+                    [
+                      { key: "extraction", label: "Giá trị trích xuất" },
+                      { key: "template", label: "Mẫu tờ khai cuối" },
+                    ] as const
+                  ).map((pane) => (
+                    <button
+                      key={pane.key}
+                      type="button"
+                      aria-pressed={rightPane === pane.key}
+                      onClick={() => {
+                        setRightPane(pane.key);
+                      }}
+                      className={`type-caption min-h-8 rounded-pill px-3 transition-colors active:scale-95 ${
+                        rightPane === pane.key ? "bg-action text-canvas" : "text-ink-48"
+                      }`}
+                    >
+                      {pane.label}
+                    </button>
+                  ))}
+                </div>
                 {criticalAttention > 0 ? (
                   <LocalizedStatus tone="red" className="shrink-0">
                     {criticalAttention} cần xem lại
@@ -663,7 +886,7 @@ export default function ReviewPage() {
               className={`flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-hairline bg-canvas lg:h-full lg:shrink-0 ${
                 maximizedPanel === "source"
                   ? "h-[75vh] lg:w-[calc(100%-0.75rem)]"
-                  : maximizedPanel === "template"
+                  : maximizedPanel === "right"
                     ? "h-[60vh] lg:hidden"
                     : "h-[60vh] lg:w-[var(--split-width)]"
               }`}
@@ -767,18 +990,31 @@ export default function ReviewPage() {
                 maximizedPanel === "source" ? "hidden" : ""
               }`}
             >
-              <div className={maximizedPanel === "template" ? "h-[75vh] min-h-0 lg:h-full" : "h-[70vh] min-h-0 lg:h-full"}>
-                <TemplateViewer
-                  shipmentId={shipmentId}
-                  version={templateVersion}
-                  name={templateName}
-                  selectedField={evidenceField}
-                  maximized={maximizedPanel === "template"}
-                  onToggleMaximize={() =>
-                    setMaximizedPanel((current) => (current === "template" ? null : "template"))
-                  }
-                  onValueClick={handleTemplateValueClick}
-                />
+              <div className={maximizedPanel === "right" ? "h-[75vh] min-h-0 lg:h-full" : "h-[70vh] min-h-0 lg:h-full"}>
+                {rightPane === "template" ? (
+                  <TemplateViewer
+                    shipmentId={shipmentId}
+                    version={templateVersion}
+                    name={templateName}
+                    selectedField={evidenceField}
+                    maximized={maximizedPanel === "right"}
+                    onToggleMaximize={() =>
+                      setMaximizedPanel((current) => (current === "right" ? null : "right"))
+                    }
+                    onValueClick={handleTemplateValueClick}
+                    onBack={() => setRightPane("extraction")}
+                  />
+                ) : (
+                  <ExtractionViewer
+                    doc={activeDoc}
+                    selectedField={evidenceField}
+                    maximized={maximizedPanel === "right"}
+                    onToggleMaximize={() =>
+                      setMaximizedPanel((current) => (current === "right" ? null : "right"))
+                    }
+                    onRowClick={(row) => activeDoc && handleExtractionRowClick(activeDoc, row)}
+                  />
+                )}
               </div>
             </div>
           </div>

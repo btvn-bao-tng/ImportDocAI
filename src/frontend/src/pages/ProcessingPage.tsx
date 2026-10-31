@@ -16,6 +16,7 @@ import {
   StatusBadge,
   Stepper,
 } from "../components/ui";
+import type { Tone } from "../components/ui";
 
 const POLL_MS = 1500;
 
@@ -29,6 +30,18 @@ const STAGE_LABEL: Record<string, string> = {
 function stageLabel(stage: string | null): string {
   if (!stage) return "Đang chạy";
   return STAGE_LABEL[stage] ?? "Tổng hợp dữ liệu";
+}
+
+function docStage(progress: JobProgress | null, docId: number): string | null {
+  return progress?.document_stages?.[String(docId)] ?? null;
+}
+
+function docStageIndex(progress: JobProgress, stage: string | null): number {
+  return Math.max(0, progress.stages.indexOf(stage ?? ""));
+}
+
+function docStageTone(stage: string | null): Tone {
+  return stage === "EXTRACTING" ? "amber" : stage ? "blue" : "gray";
 }
 
 const DOC_STATUS_TONE: Record<string, "green" | "amber" | "red" | "gray"> = {
@@ -53,9 +66,17 @@ const DOC_STATUS_LABEL: Record<string, string> = {
 
 const CARD = "rounded-lg border border-hairline bg-canvas";
 
-function DocumentStageRow({ doc, progress }: { doc: DocumentSummary; progress: JobProgress | null }) {
-  const isCurrent = progress?.current_document_id === doc.id && progress.current_stage !== progress.final_stage;
-  const stageIndex = isCurrent ? progress.stages.indexOf(progress.current_stage ?? "") : -1;
+function DocumentStageRow({
+  doc,
+  progress,
+  running,
+}: {
+  doc: DocumentSummary;
+  progress: JobProgress | null;
+  running: boolean;
+}) {
+  const stage = docStage(progress, doc.id);
+  const inFlight = stage !== null;
   const finished = doc.status === "EXTRACTED" || doc.status === "FAILED";
   const tone = DOC_STATUS_TONE[doc.status] ?? "gray";
 
@@ -66,22 +87,27 @@ function DocumentStageRow({ doc, progress }: { doc: DocumentSummary; progress: J
           <p className="type-body truncate text-ink">{doc.filename}</p>
           <p className="type-caption mt-1 text-ink-48">
             {doc.doc_type ?? "Chưa phân loại"}
-            {isCurrent ? ` · ${stageLabel(progress.current_stage)}…` : ""}
+            {inFlight ? ` · ${stageLabel(stage)}…` : ""}
           </p>
-          {isCurrent ? (
+          {inFlight && progress ? (
             <div className="mt-3 max-w-[420px]">
-              <Stepper steps={progress.stages.map((s) => stageLabel(s))} current={Math.max(0, stageIndex)} />
+              <Stepper steps={progress.stages.map((s) => stageLabel(s))} current={docStageIndex(progress, stage)} />
             </div>
           ) : null}
           {doc.error ? <p className="type-caption mt-2 text-critical">{doc.error}</p> : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {finished ? (
+          {inFlight ? (
+            <>
+              <LocalizedStatus tone={docStageTone(stage)}>{stageLabel(stage)}</LocalizedStatus>
+              <Spinner label="" />
+            </>
+          ) : finished ? (
             <LocalizedStatus tone={tone}>{DOC_STATUS_LABEL[doc.status] ?? doc.status}</LocalizedStatus>
-          ) : isCurrent ? (
-            <Spinner label="" />
-          ) : (
+          ) : running ? (
             <span className="type-caption text-ink-48">Chờ đến lượt</span>
+          ) : (
+            <span className="type-caption text-ink-48">Chưa xử lý</span>
           )}
         </div>
       </div>
@@ -98,12 +124,6 @@ export default function ProcessingPage() {
   const [restarted, setRestarted] = useState(false);
   const navigatedRef = useRef(false);
 
-  const shipmentQuery = useQuery({
-    queryKey: ["shipment", shipmentId],
-    queryFn: () => api.getShipment(shipmentId),
-    enabled: validId,
-  });
-
   const progressQuery = useQuery({
     queryKey: ["progress", shipmentId],
     queryFn: () => api.getProgress(shipmentId),
@@ -112,6 +132,17 @@ export default function ProcessingPage() {
       const job = query.state.data?.job;
       if (!job) return POLL_MS;
       return job.status === "PENDING" || job.status === "RUNNING" ? POLL_MS : false;
+    },
+  });
+
+  const shipmentQuery = useQuery({
+    queryKey: ["shipment", shipmentId],
+    queryFn: () => api.getShipment(shipmentId),
+    enabled: validId,
+    refetchInterval: (query) => {
+      const job = progressQuery.data?.job;
+      const running = !job || job.status === "PENDING" || job.status === "RUNNING";
+      return running && query.state.data?.documents.length ? POLL_MS : false;
     },
   });
 
@@ -190,20 +221,22 @@ export default function ProcessingPage() {
   const done = progress?.document_done ?? 0;
   const percent = total > 0 ? Math.round((Math.min(done, total) / total) * 100) : 0;
   const stageSteps = progress ? [...progress.stages.map((s) => stageLabel(s)), stageLabel(progress.final_stage)] : [];
-  const currentStageIndex = progress
-    ? progress.current_stage === progress.final_stage
-      ? progress.stages.length
-      : Math.max(0, progress.stages.indexOf(progress.current_stage ?? ""))
-    : 0;
-  const currentDoc = progress?.current_document_id
-    ? documents.find((d) => d.id === progress.current_document_id)
-    : undefined;
+  const busy = documents.filter((doc) => docStage(progress, doc.id) !== null);
+  const queued = documents.filter(
+    (doc) =>
+      !busy.includes(doc) &&
+      doc.status !== "EXTRACTED" &&
+      doc.status !== "FAILED" &&
+      !doc.error,
+  );
+  const finalizing = progress?.current_stage === progress?.final_stage;
+  const currentStageIndex = finalizing ? progress?.stages.length ?? 0 : 0;
 
   const header = (
     <PageHeader
       eyebrow="Đang xử lý"
       title={shipmentQuery.data?.code ?? `Lô #${shipmentId}`}
-      subtitle="Hệ thống đang đọc, phân loại và trích xuất từng chứng từ. Bạn sẽ được đưa sang trang xem lại khi hoàn tất."
+      subtitle="Hệ thống xử lý song song các chứng từ: đọc tệp, phân loại và trích xuất. Bạn sẽ được đưa sang trang xem lại khi hoàn tất."
       actions={job ? <StatusBadge status={job.status} /> : null}
     />
   );
@@ -262,13 +295,17 @@ export default function ProcessingPage() {
             <p className="type-caption text-ink-48">
               {job?.status === "PENDING"
                 ? "Đang chờ worker nhận job…"
-                : currentDoc
-                  ? `Đang xử lý: ${currentDoc.filename}`
-                  : progress?.current_stage === progress?.final_stage
+                : busy.length > 0
+                  ? `Đang xử lý ${busy.length} chứng từ song song${
+                      queued.length > 0 ? `, ${queued.length} chứng từ đang chờ đến lượt` : ""
+                    } — mỗi tệp có tiến trình riêng.`
+                  : finalizing
                     ? "Đang tổng hợp chứng từ, đối chiếu bên mua/bên bán…"
                     : "Đang chuẩn bị…"}
             </p>
-            {stageSteps.length > 0 ? <Stepper steps={stageSteps} current={currentStageIndex} /> : null}
+            {finalizing && stageSteps.length > 0 ? (
+              <Stepper steps={stageSteps} current={currentStageIndex} />
+            ) : null}
           </div>
         </section>
 
@@ -282,7 +319,7 @@ export default function ProcessingPage() {
         ) : (
           <ul className={`${CARD} list-none p-0`}>
             {documents.map((doc) => (
-              <DocumentStageRow key={doc.id} doc={doc} progress={progress} />
+              <DocumentStageRow key={doc.id} doc={doc} progress={progress} running={isRunning} />
             ))}
           </ul>
         )}

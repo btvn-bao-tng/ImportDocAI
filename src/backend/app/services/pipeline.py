@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -53,7 +54,9 @@ async def process_document(
 
     try:
         await stage("PARSING")
-        parsed = parse_document(path)
+        # pdfplumber/openpyxl are synchronous and CPU-bound: run them in a worker thread
+        # so a large file does not stall every other document in the same job.
+        parsed = await asyncio.to_thread(parse_document, path)
         doc.page_count = parsed["page_count"]
         doc.has_text_layer = bool(parsed["has_text_layer"])
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -27,8 +28,10 @@ def difference_between(pages_a: list[str], pages_b: list[str], limit: int = 60) 
 
 async def first_difference(doc: Document, other: Document) -> str | None:
     try:
-        pa = parse_document(Path(doc.storage_path))
-        pb = parse_document(Path(other.storage_path))
+        pa, pb = await asyncio.gather(
+            asyncio.to_thread(parse_document, Path(doc.storage_path)),
+            asyncio.to_thread(parse_document, Path(other.storage_path)),
+        )
     except Exception:
         return None
     if pa["ext"] in PDF_EXT and pb["ext"] in PDF_EXT:

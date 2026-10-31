@@ -44,6 +44,7 @@ export interface JobProgress {
   document_done: number;
   current_document_id: number | null;
   current_stage: ProcessingStage;
+  document_stages: Record<string, string>;
   stages: string[];
   final_stage: string;
 }

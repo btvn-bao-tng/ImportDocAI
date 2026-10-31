@@ -75,6 +75,7 @@ def serialize_job(job: Job) -> dict:
             "document_done": job.document_done or 0,
             "current_document_id": job.current_document_id,
             "current_stage": job.current_stage,
+            "document_stages": job.document_stages or {},
             "stages": list(DOCUMENT_STAGES),
             "final_stage": FINAL_STAGE,
         },

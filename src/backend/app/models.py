@@ -356,6 +356,7 @@ class Job(Base):
     document_done: Mapped[int] = mapped_column(Integer, default=0)
     current_document_id: Mapped[int | None] = mapped_column(Integer)
     current_stage: Mapped[str | None] = mapped_column(String(32))
+    document_stages: Mapped[dict] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str] = mapped_column(String(256), index=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

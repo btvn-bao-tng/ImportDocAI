@@ -48,7 +48,7 @@ test.describe("upload and processing", () => {
     await expect(page.getByRole("heading", { name: "Chứng từ trong lô" })).toBeVisible();
 
     await page.waitForURL(/\/shipments\/\d+\/review$/, { timeout: 60_000 });
-    await expect(page.getByRole("heading", { name: "Mẫu tờ khai cuối" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Giá trị trích xuất" })).toBeVisible();
   });
 
   test("explains that processing needs at least one document", async ({ page }) => {
@@ -78,6 +78,7 @@ test.describe("upload and processing", () => {
 
 test.describe("review page", () => {
   test("shows the source document, the template preview and the verify hand-off", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     await createShipment(page, shipmentCode());
     await processSampleDocument(page);
 
@@ -90,6 +91,9 @@ test.describe("review page", () => {
     await expect(page.getByText("Trang 1 / 1")).toBeVisible();
 
     await expect(page.getByText(/cần xem lại|Đã xử lý xong/).first()).toBeVisible();
+    await expect(page.getByRole("region", { name: "Giá trị trích xuất" })).toBeVisible();
+
+    await page.getByRole("group", { name: "Chọn nội dung khung phải" }).getByRole("button", { name: "Mẫu tờ khai cuối" }).click();
     await expect(page.getByRole("heading", { name: "Mẫu tờ khai cuối" })).toBeVisible();
     await expect(page.getByRole("tablist", { name: "Chọn sheet mẫu" })).toBeVisible();
   });
