@@ -79,22 +79,41 @@ async def test_two_declaration_files_mirror_into_one_declaration(engine_db):
     await dispose()
 
 
-async def test_parallel_documents_do_not_lock_each_other_out(engine_db, monkeypatch):
-    """Two files extracting for longer than SQLite's busy timeout must both still finish."""
+async def test_parallel_documents_do_not_lock_each_other_out(engine_db, tmp_path, monkeypatch):
+    """The extraction phase must never hold SQLite's write lock.
+
+    A sibling document (or the job's own stage update) writes through another
+    connection with a short busy timeout; if the pipeline keeps a write transaction
+    open across the LLM await — minutes in production — those writers die with
+    "database is locked". The probe here fails fast when the lock is held.
+    """
     create_all, session_scope, dispose = engine_db
     await create_all()
-    from app.services import pipeline
+    import pymupdf as fitz
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
 
-    shipped = Path(__file__).resolve().parents[3] / "data" / "sample" / "input"
+    from app.services import pipeline
+    from app.services.schemas import ClassificationOut
+
+    probe_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'par.db'}", connect_args={"timeout": 0.5}
+    )
+    probe_failures: list[str] = []
+
+    for name in ("slow-a.pdf", "slow-b.pdf"):
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "COMMERCIAL INVOICE slow extraction\n" * 6)
+        doc.save(tmp_path / name)
+        doc.close()
 
     async with session_scope() as session:
         session.add(Shipment(code="PAR-SLOW", status="PROCESSING"))
         await session.flush()
         shipment_id = (await session.execute(select(Shipment.id))).scalar_one()
-        for name in ("bill.pdf", "bill- YMJAI245332642.pdf"):
-            source = shipped / name
-            if not source.exists():
-                pytest.skip(f"missing sample {source}")
+        for name in ("slow-a.pdf", "slow-b.pdf"):
+            source = tmp_path / name
             session.add(
                 Document(
                     shipment_id=shipment_id,
@@ -104,7 +123,7 @@ async def test_parallel_documents_do_not_lock_each_other_out(engine_db, monkeypa
                     checksum=name,
                     page_count=1,
                     has_text_layer=True,
-                    doc_type="OTHER",
+                    doc_type="COMMERCIAL_INVOICE",
                     doc_type_source="USER",
                     status="UPLOADED",
                 )
@@ -112,13 +131,31 @@ async def test_parallel_documents_do_not_lock_each_other_out(engine_db, monkeypa
         await session.flush()
         doc_ids = list((await session.execute(select(Document.id).order_by(Document.id))).scalars())
 
+    async def probe(holder: str) -> None:
+        try:
+            async with probe_engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO audit_events (entity, entity_id, action, actor, created_at) "
+                        "VALUES ('probe', '0', 'PROBE', :who, CURRENT_TIMESTAMP)"
+                    ),
+                    {"who": holder},
+                )
+        except Exception as exc:  # OperationalError "database is locked" lands here
+            probe_failures.append(f"{holder}: {exc}")
+
     class SlowService:
         def __init__(self, llm=None):
             pass
 
-        async def extract(self, *args, **kwargs):
-            # Longer than busy_timeout (5s) with no database work held by the caller.
-            await asyncio.sleep(6)
+        async def classify_document(self, filename, path, pages, grid=None):
+            return ClassificationOut(doc_type="COMMERCIAL_INVOICE", confidence=0.9, sections=[])
+
+        async def extract_sections(self, filename, path, pages, sections, fallback_doc_type, grid=None):
+            # Stand-in for minutes of LLM calls: a second writer must still get through.
+            await probe(filename)
+            await asyncio.sleep(0.2)
+            await probe(f"{filename}:still")
             return []
 
     monkeypatch.setattr(pipeline, "ExtractionService", SlowService)
@@ -133,7 +170,9 @@ async def test_parallel_documents_do_not_lock_each_other_out(engine_db, monkeypa
         statuses = list(
             (await session.execute(select(Document.status).where(Document.id.in_(doc_ids)))).scalars()
         )
+    assert probe_failures == [], probe_failures
     assert statuses == ["EXTRACTED", "EXTRACTED"]
+    await probe_engine.dispose()
     await dispose()
 
 

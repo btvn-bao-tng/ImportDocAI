@@ -1,0 +1,52 @@
+n,target_field,output_cell,expected_value,value_type,source_document,source_ref,eligibility,audit_status,reviewer_confirmed,note
+1,declaration.importer_name,H11,CÔNG TY TNHH GỖ KINGSMAN VIỆT NAM,text,Contract/Invoice tr.1-2; Arrival Notice tr.1,p.1-2,INPUT_SUPPORTED,KHAP,Casing normalized,false
+2,declaration.exporter_name,H23,"BERTEC ENTERPRISE CO., LTD.",text,TAEDA PINE COLA FINAL.pdf,p.1-2,INPUT_SUPPORTED,KHAP,"Seller, not physical shipper",false
+3,declaration.bill_of_lading_no,D31,HDMUBUEA32635400,text,Arrival Notice; B/L preview,p.1; p.5,INPUT_SUPPORTED,PARTIAL,Date prefix 140426 is a customs convention,false
+4,declaration.invoice_no,J41,CD2025121801-2,text,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,KHAP,Output had VNACCS prefix A,false
+5,declaration.invoice_total,P45,23.230,decimal,TAEDA PINE COLA FINAL.pdf,p.1-2,INPUT_SUPPORTED,KHAP,CIF total USD,false
+6,declaration.importer_tax_code,H10,3702474140,text,MAU 01.pdf; Arrival Notice,p.1; p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+7,declaration.importer_address,H14,"Thửa đất số 334, Tờ bản đồ số 30, Khu phố Uyên Hưng 6, Phường Tân Uyên, TP.HCM",text,MAU 01.pdf,p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,Use the latest business document,false
+8,declaration.importer_phone,H16,0274 3800882,text,TAEDA FINAL; Arrival Notice,p.2; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,Reference declaration uses 3800882,false
+9,declaration.exporter_address,H25,"NO.29, LN.496, CHANGCHUN ST.",text,TAEDA PINE COLA FINAL.pdf,p.1-2,INPUT_SUPPORTED,MISSING_INPUT_HAS,Leak cells U25/H26/U26 must stay blank,false
+10,declaration.exporter_country_code,H27,TW,text,TAEDA PINE COLA FINAL.pdf,p.1-2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+11,declaration.representative_hs_code,AE6,4407,text,TAEDA FINAL; MAU 01,p.5-7; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,Four-digit group only; eight digits need business confirmation,false
+12,declaration.customs_office,L7,SONGTHANBD,text,VNACCS reference declaration,n/a,REFERENCE_ONLY,REFERENCE_ONLY,Cannot be derived from commercial input,false
+13,declaration.processing_department_code,AE7,00,text,VNACCS reference; screenshot,n/a,REQUIRES_USER,WRONG_MAPPING,"43IH is a customs office code, not the processing department; output must stay blank",false
+14,declaration.warehouse_code,U30,02CIS01,text,VNACCS reference declaration,n/a,REFERENCE_ONLY,REFERENCE_ONLY,,false
+15,declaration.discharge_port_code,U31,VNCLI,text,TAEDA FINAL; Arrival Notice; EDO,p.5; p.1; p.1,REQUIRES_USER,NEEDS_BUSINESS_CHECK,Discharge port vs place of delivery,false
+16,declaration.loading_port_code,U32,ARBUE,text,Arrival Notice; TAEDA FINAL,p.1; p.5,INPUT_SUPPORTED,MISSING_INPUT_HAS,Needs the official location code table,false
+17,declaration.transport_vessel,Z34,NYK VESTA 094E,text,B/L preview; Arrival Notice,"p.2,5; p.1",REQUIRES_USER,NEEDS_BUSINESS_CHECK,HMM JAKARTA vs NYK VESTA: transshipment or change,false
+18,declaration.cargo_arrival_date,U35,02/06/2026,date,Arrival Notice; EDO,p.1; p.1,REQUIRES_USER,NEEDS_BUSINESS_CHECK,ETA 01/06/2026 vs actual 02/06/2026,false
+19,declaration.package_count,K36,28,int,TAEDA FINAL; Arrival Notice,p.3; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+20,declaration.package_unit,P36,PK,text,TAEDA FINAL; Arrival Notice,p.3; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+21,declaration.gross_weight,K37,52312,decimal,TAEDA FINAL; Arrival Notice,p.3; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+22,declaration.gross_weight_unit,P37,KGM,text,TAEDA FINAL; Arrival Notice,p.3; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+23,declaration.container_count,K38,2,int,Arrival Notice; EDO,p.1; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+24,declaration.invoice_date,J43,14/04/2026,date,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+25,declaration.payment_method,J44,TTR,text,TAEDA PINE COLA FINAL.pdf,p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+26,declaration.invoice_terms,J45,CIF,text,TAEDA PINE COLA FINAL.pdf,p.1-2,INPUT_SUPPORTED,MISSING_INPUT_HAS,Output must also state currency USD,false
+27,license.number,F50,38508/26/0201/KDTV,text,BNN2026190635_GCN.pdf,p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,"Issued 11/06/2026, after registration 02/06/2026",false
+28,declaration.legal_document_codes,R50,26/029/BKGNK,text,MAU 01.pdf,p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,Document-type code needs confirmation,false
+29,declaration.entrusted_exporter_name,D64,ESTABLECIMIENTO LAS MARIAS SACIFA,text,Arrival Notice; TAEDA FINAL,"p.1; p.1,5",INPUT_SUPPORTED,MISSING_INPUT_HAS,Physical shipper differs from seller,false
+30,goods.hs_code[1],G149,44071110,text,VNACCS reference; TAEDA FINAL,"p.5,7",REQUIRES_USER,NEEDS_BUSINESS_CHECK,Commercial docs show 44071100; eight-digit VN code needs confirmation,false
+31,goods.description[1],G150,"TAEDA PINE KD LUMBER, COLA GRADE, ROUGH SAWN, 38x145-190x2440-3660 mm",text,TAEDA FINAL; MAU 01,p.1-4; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+32,goods.quantity_1[1],V153,46.46,decimal,TAEDA FINAL; Arrival Notice,p.2-4; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+33,goods.quantity_1_unit[1],AE153,MTQ,text,TAEDA FINAL; reference,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+34,goods.quantity_2[1],V154,46.46,decimal,TAEDA FINAL; reference,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+35,goods.invoice_amount[1],I155,11615,decimal,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,46.46 x 250,false
+36,goods.unit_price[1],V155,250,decimal,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+37,goods.unit_price_currency[1],AC155,USD,currency,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+38,goods.origin_country_code[1],X160,AR,text,TAEDA FINAL; MAU 01,p.7; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+39,goods.hs_code[2],G202,44071110,text,VNACCS reference; TAEDA FINAL,"p.5,7",REQUIRES_USER,NEEDS_BUSINESS_CHECK,Same business decision as row 1,false
+40,goods.description[2],G203,"TAEDA PINE KD LUMBER, COLA GRADE, ROUGH SAWN, 38x145-190x2440-3660 mm",text,TAEDA PINE COLA FINAL.pdf,p.1-4,INPUT_SUPPORTED,MISSING_INPUT_HAS,Second container row,false
+41,goods.quantity_1[2],V206,46.46,decimal,TAEDA PINE COLA FINAL.pdf,p.2-4,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+42,goods.quantity_2[2],V207,46.46,decimal,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+43,goods.invoice_amount[2],I208,11615,decimal,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+44,goods.unit_price[2],V208,250,decimal,TAEDA PINE COLA FINAL.pdf,p.2,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+45,goods.origin_country_code[2],X213,AR,text,TAEDA FINAL; MAU 01,p.7; p.1,INPUT_SUPPORTED,MISSING_INPUT_HAS,,false
+46,declaration.page_count,U75,4,int,ToKhaiHQ7N...THONG QUAN.xlsx,n/a,CUSTOMS_GENERATED,DIFFERS_REFERENCE,Reference cleared declaration has four pages,false
+47,declaration.goods_line_count,AF75,2,int,TAEDA FINAL; reference,p.2,INPUT_SUPPORTED,WRONG_OR_MISSING,Output had 0 goods lines,false
+48,declaration.registered_changed_at,R8,12/06/2026 11:19:28,text,VNACCS cleared declaration,n/a,CUSTOMS_GENERATED,DIFFERS_REFERENCE,Output value did not come from commercial PDFs,false
+49,declaration.declaration_no,E4,108299395961,text,VNACCS reference declaration,n/a,CUSTOMS_GENERATED,REFERENCE_ONLY,Never generate a declaration number before the customs response,false
+50,declaration.total_customs_value,J46,607301890,decimal,VNACCS reference declaration,n/a,CUSTOMS_GENERATED,REFERENCE_MATCH,Needs exchange rate and valuation rules,false
+51,declaration.declaration_kind,P6,A12,text,VNACCS reference; screenshot,n/a,REQUIRES_USER,NEEDS_BUSINESS_CHECK,"Business code, not derivable from commercial PDFs",false

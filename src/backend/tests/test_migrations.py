@@ -115,3 +115,48 @@ async def test_create_all_skips_unique_index_when_legacy_rows_are_duplicated(tmp
     indexes = {row[1] for row in con.execute("PRAGMA index_list(declarations)")}
     con.close()
     assert "uq_declaration_shipment" not in indexes
+
+
+async def test_phase_b_tables_and_unique_target_index_are_created(tmp_path):
+    """Resolved-field storage needs its own tables, keys and the idempotent upgrade path."""
+    db = tmp_path / "phaseb.db"
+    for _ in range(2):
+        init_engine(_settings(tmp_path, db))
+        await create_all()
+        await dispose()
+
+    con = sqlite3.connect(db)
+    tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    indexes = {row[1] for row in con.execute("PRAGMA index_list(resolved_fields)")}
+    extracted_cols = {row[1] for row in con.execute("PRAGMA table_info(extracted_fields)")}
+    con.close()
+
+    assert {
+        "document_sections",
+        "extraction_revisions",
+        "resolved_fields",
+        "declaration_field_sources",
+        "resolved_field_history",
+    } <= tables
+    assert "uq_resolved_field_target" in indexes
+    assert {"section_id", "section_type", "source_row_index", "container_no", "evidence_state"} <= extracted_cols
+
+
+async def test_legacy_database_gains_phase_b_tables_without_losing_rows(tmp_path):
+    db = tmp_path / "legacy_phaseb.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE declarations (id INTEGER PRIMARY KEY, shipment_id INTEGER, declaration_no VARCHAR(64))")
+    con.execute("INSERT INTO declarations (shipment_id, declaration_no) VALUES (1, 'KEEP')")
+    con.commit()
+    con.close()
+
+    init_engine(_settings(tmp_path, db))
+    await create_all()
+    await dispose()
+
+    con = sqlite3.connect(db)
+    tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    kept = con.execute("SELECT declaration_no FROM declarations WHERE shipment_id = 1").fetchone()
+    con.close()
+    assert "resolved_fields" in tables
+    assert kept == ("KEEP",)

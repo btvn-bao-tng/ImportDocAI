@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..audit import record_audit
@@ -45,13 +46,20 @@ def parallel_limit() -> int:
 
 
 async def _update_progress(job_id: int, **values) -> None:
-    """Overwrite job progress fields. Only called between files, never per stage."""
-    async with session_scope() as session:
-        job = await session.get(Job, job_id)
-        if job is None or job.status not in {"PENDING", "RUNNING"}:
-            return
-        for key, value in values.items():
-            setattr(job, key, value)
+    """Overwrite job progress fields. Only called between files, never per stage.
+
+    Best-effort by design: progress cosmetics must never fail (or roll back) the
+    document processing that reported them.
+    """
+    try:
+        async with session_scope() as session:
+            job = await session.get(Job, job_id)
+            if job is None or job.status not in {"PENDING", "RUNNING"}:
+                return
+            for key, value in values.items():
+                setattr(job, key, value)
+    except SQLAlchemyError as exc:
+        log.warning("progress update for job %s failed (continuing): %s", job_id, exc)
 
 
 # Live stages live in their own table, one row per in-flight file. SQLite has no row
@@ -59,39 +67,45 @@ async def _update_progress(job_id: int, **values) -> None:
 # would lose entries when two files report at once; an upsert on a unique key cannot.
 # The map in the API response is projected from these rows, never stored twice.
 async def _set_document_stage(job_id: int, document_id: int, stage: str | None, attempt: int | None = None) -> None:
-    async with session_scope() as session:
-        job = await session.get(Job, job_id)
-        if job is None or job.status not in {"PENDING", "RUNNING"}:
-            return
-        if attempt is not None and attempt != job.attempts:
-            # A worker whose lease expired must not publish into the retry that replaced it.
-            return
-        if stage is None:
-            await session.execute(
-                delete(JobDocumentStage).where(
-                    JobDocumentStage.job_id == job_id,
-                    JobDocumentStage.document_id == document_id,
-                )
-            )
-            done = (
+    try:
+        async with session_scope() as session:
+            job = await session.get(Job, job_id)
+            if job is None or job.status not in {"PENDING", "RUNNING"}:
+                return
+            if attempt is not None and attempt != job.attempts:
+                # A worker whose lease expired must not publish into the retry that replaced it.
+                return
+            if stage is None:
                 await session.execute(
-                    select(func.count()).select_from(JobDocumentStage).where(JobDocumentStage.job_id == job_id)
+                    delete(JobDocumentStage).where(
+                        JobDocumentStage.job_id == job_id,
+                        JobDocumentStage.document_id == document_id,
+                    )
                 )
-            ).scalar_one()
-            job.document_done = max(0, min(job.document_total, job.document_total - done))
-            job.current_stage = FINAL_STAGE
-            job.current_document_id = None
-            return
-        await session.execute(
-            sqlite_insert(JobDocumentStage)
-            .values(job_id=job_id, document_id=document_id, stage=stage, attempt=job.attempts)
-            .on_conflict_do_update(
-                index_elements=[JobDocumentStage.job_id, JobDocumentStage.document_id],
-                set_={"stage": stage},
+                done = (
+                    await session.execute(
+                        select(func.count()).select_from(JobDocumentStage).where(JobDocumentStage.job_id == job_id)
+                    )
+                ).scalar_one()
+                job.document_done = max(0, min(job.document_total, job.document_total - done))
+                job.current_stage = FINAL_STAGE
+                job.current_document_id = None
+                return
+            await session.execute(
+                sqlite_insert(JobDocumentStage)
+                .values(job_id=job_id, document_id=document_id, stage=stage, attempt=job.attempts)
+                .on_conflict_do_update(
+                    index_elements=[JobDocumentStage.job_id, JobDocumentStage.document_id],
+                    set_={"stage": stage},
+                )
             )
-        )
-        job.current_stage = stage
-        job.current_document_id = document_id
+            job.current_stage = stage
+            job.current_document_id = document_id
+    except SQLAlchemyError as exc:
+        # The stage table only feeds the UI stepper. A transient write conflict (for
+        # example a sibling document briefly holding SQLite's writer lock) must not
+        # abort the extraction that reported the stage.
+        log.warning("stage update for job %s doc %s failed (continuing): %s", job_id, document_id, exc)
 async def refresh_shipment_status(session: AsyncSession, shipment_id: int) -> None:
     shipment = await session.get(Shipment, shipment_id)
     if shipment is None:
@@ -181,11 +195,25 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
 
     async with session_scope() as session:
         shipment_id = payload.get("shipment_id")
+        resolution_error: str | None = None
         if shipment_id:
             await pipeline.upsert_parties_and_transactions(session, shipment_id)
+            try:
+                from .resolution import resolve_shipment
+
+                await resolve_shipment(session, shipment_id, "tokhai_import_v1", llm)
+            except Exception as exc:
+                # Resolution is a separate, retryable stage: a failure here must not
+                # erase the extraction that already succeeded, and must not be reported
+                # as a generic worker crash. Roll back so a half-written resolution is
+                # never committed by the surrounding session_scope.
+                log.exception("resolution failed for shipment %s", shipment_id)
+                await session.rollback()
+                resolution_error = f"RESOLUTION_FAILED: {exc}"
             await refresh_shipment_status(session, shipment_id)
         job = await session.get(Job, job_id)
         if job is not None:
-            job.error = "; ".join(failures) if failures else None
+            errors = [message for message in (["; ".join(failures)] if failures else []) + ([resolution_error] if resolution_error else []) if message]
+            job.error = "; ".join(errors) if errors else None
             record_audit(session, "job", job_id, "FAILED" if failures else "DONE", payload={"failures": failures})
     return not failures

@@ -122,9 +122,20 @@ def _payload(goods=None, reviewed: bool = True) -> DeclarationPayload:
 
 
 def test_tokhai_template_differs_from_reference_only_in_owned_cells():
-    """No stale data may survive, and no label/layout cell may be lost."""
+    """No stale data may survive, and no label/layout cell may be lost.
+
+    The audit found the reference workbook's exporter address (`U25`, `H26`, `U26`)
+    copied into the shipped template. Those cells are now enumerated as data cells and
+    must be blank; every other difference from the reference is still a release blocker.
+    """
+    from app.services.template_sanitize import TEMPLATE_DATA_CELLS, identifier_leaks
+
     mapping, template_path = load_mapping("tokhai_import_v1")
-    assert template_diff_problems(mapping, EXPECTED, template_path) == []
+    problems = template_diff_problems(mapping, EXPECTED, template_path)
+    sanitized = {f"TKN!{cell}" for cell in TEMPLATE_DATA_CELLS["tokhai_import_v1"]["TKN"]}
+    problems = [p for p in problems if p.split(" ")[0] not in sanitized]
+    assert problems == []
+    assert identifier_leaks(template_path, "tokhai_import_v1") == []
 
 
 def test_tokhai_template_keeps_hang_hidden():

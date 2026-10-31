@@ -244,34 +244,21 @@ def test_template_export_region_holds_no_customer_values():
 
 
 def test_reference_identity_is_not_a_template_constant():
-    """Guard the known gap by inspecting the actual template, not just the mapping.
+    """RC7: the shipped templates must not carry another shipment's identity.
 
-    KNOWN_GAP (disclosed, blocking a production FINAL): the shipped U&I template still
-    hardcodes the LS2628 reference shipment — PACKING LIST!F5 number, B10 vessel,
-    B11 ports, A12 container, HOP DONG!B4 shipper, B9 address, B19 amount-in-words.
-    Fixing it means adding those cells to the mapping (transport.vessel, container_no,
-    shipper...), which changes the export contract. Until then, `FINAL` for the U&I
-    template can silently carry another shipment's identity, so this test records the
-    exact cells that must not ship rather than pretending they are gone.
+    These cells used to hold the LS2628 reference shipment (PACKING LIST!F5 number,
+    B10 vessel, B11 ports, A12 container, HOP DONG!B4 shipper, B9 address, B19
+    amount-in-words). They are now enumerated in `TEMPLATE_DATA_CELLS` and blank, so a
+    FINAL export for a different shipment cannot inherit them.
     """
-    mapping, template_path = load_mapping()
-    wb = load_workbook(template_path)
-    expected_reference_values = {
-        "PACKING LIST!F5": "LS2628-WM",
-        "PACKING LIST!B10": "YM CONTINENT 2608S",
-        "PACKING LIST!B11": "DALIAN, CHINA",
-        "PACKING LIST!A12": "1*40' YMMU6509610",
-        "HOP DONG!B4": "NANJING JOYCE IMPORT& EXPORT TRADE CO., LTD",
-    }
-    still_present = []
-    for ref, value in expected_reference_values.items():
-        sheet, cell = ref.split("!")
-        if wb[sheet][cell].value == value:
-            still_present.append(ref)
-    assert sorted(still_present) == sorted(expected_reference_values), (
-        "KNOWN_GAP set changed — update docs/field_catalog.yaml and this test: " f"still_present={still_present}"
+    from app.services.template_sanitize import (
+        data_cells_with_values,
+        identifier_leaks,
     )
-    assert "F5" not in (mapping["sheets"]["PACKING LIST"].get("scalars") or {})
+
+    _, template_path = load_mapping()
+    assert data_cells_with_values(template_path, "uandi_import_v1") == []
+    assert identifier_leaks(template_path, "uandi_import_v1") == []
 
 
 def test_second_invoice_line_is_rejected_not_written_into_merged_row(tmp_path: Path):

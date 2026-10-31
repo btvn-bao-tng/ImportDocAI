@@ -102,6 +102,11 @@ class ExtractedField(Base):
     grounding_verified: Mapped[bool] = mapped_column(default=False)
     review_status: Mapped[str] = mapped_column(String(16), default="UNREVIEWED")
     critical: Mapped[bool] = mapped_column(default=False)
+    section_id: Mapped[int | None] = mapped_column(ForeignKey("document_sections.id"))
+    section_type: Mapped[str | None] = mapped_column(String(64))
+    source_row_index: Mapped[int | None] = mapped_column(Integer)
+    container_no: Mapped[str | None] = mapped_column(String(32))
+    evidence_state: Mapped[str | None] = mapped_column(String(24))
 
 
 class FieldValueHistory(Base):
@@ -354,6 +359,118 @@ class JobDocumentStage(Base):
     # not publish stages, or count completions, for the retry that replaced it.
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DocumentSection(Base):
+    """A logical document inside one uploaded file (pages are never split on disk).
+
+    A 10-page bundle may hold Contract, Invoice, Packing List, B/L and certificates.
+    The original `Document` and its file stay intact; sections only annotate ranges.
+    """
+
+    __tablename__ = "document_sections"
+    __table_args__ = (
+        UniqueConstraint("document_id", "page_start", "page_end", name="uq_document_section_range"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    page_start: Mapped[int] = mapped_column(Integer, default=0)
+    page_end: Mapped[int] = mapped_column(Integer, default=0)
+    section_type: Mapped[str] = mapped_column(String(64), default="UNKNOWN")
+    classification_state: Mapped[str] = mapped_column(String(32), default="UNKNOWN")
+    classification_evidence: Mapped[str | None] = mapped_column(Text)
+    text_chars: Mapped[int] = mapped_column(Integer, default=0)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ExtractionRevision(Base):
+    """One extraction run of a document/section: reproducible by its input versions."""
+
+    __tablename__ = "extraction_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    section_id: Mapped[int | None] = mapped_column(ForeignKey("document_sections.id"))
+    source_hash: Mapped[str] = mapped_column(String(64), default="")
+    prompt_version: Mapped[str | None] = mapped_column(String(64))
+    model_name: Mapped[str | None] = mapped_column(String(64))
+    schema_version: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="DONE")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResolvedField(Base):
+    """The canonical value of one target field for one shipment and template.
+
+    Only `ShipmentResolutionService` writes this table. Review edits here, and the
+    exporter reads exactly this row, so a human edit cannot diverge from the workbook.
+    """
+
+    __tablename__ = "resolved_fields"
+    __table_args__ = (
+        UniqueConstraint(
+            "shipment_id", "target_key", "template_version", name="uq_resolved_field_target"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shipment_id: Mapped[int] = mapped_column(ForeignKey("shipments.id"), index=True)
+    template_version: Mapped[str] = mapped_column(String(64), default="tokhai_import_v1")
+    target_key: Mapped[str] = mapped_column(String(128), index=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    value_type: Mapped[str] = mapped_column(String(16), default="text")
+    unit: Mapped[str | None] = mapped_column(String(32))
+    # RESOLVED | MISSING | AMBIGUOUS | NEEDS_REVIEW | STALE_REVIEW
+    state: Mapped[str] = mapped_column(String(24), default="MISSING")
+    # INPUT_DERIVED | CUSTOMS_GENERATED | DERIVED
+    origin: Mapped[str] = mapped_column(String(24), default="INPUT_DERIVED")
+    # BUSINESS_INPUT | CUSTOMS_REFERENCE
+    document_role: Mapped[str] = mapped_column(String(24), default="BUSINESS_INPUT")
+    # DIRECT | NORMALIZED | CALCULATED | LLM_SUGGESTED | USER_EDITED
+    resolution_method: Mapped[str] = mapped_column(String(24), default="DIRECT")
+    resolved_by: Mapped[str] = mapped_column(String(64), default="system")
+    review_status: Mapped[str] = mapped_column(String(16), default="UNREVIEWED")
+    source_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DeclarationFieldSource(Base):
+    """Field-level evidence for a resolved field (PRIMARY / SUPPORTING / CONFLICT)."""
+
+    __tablename__ = "declaration_field_sources"
+    __table_args__ = (Index("ix_decl_field_sources_resolved", "resolved_field_id", "evidence_role"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    resolved_field_id: Mapped[int] = mapped_column(ForeignKey("resolved_fields.id"), index=True)
+    source_field_id: Mapped[int | None] = mapped_column(ForeignKey("extracted_fields.id"))
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    section_id: Mapped[int | None] = mapped_column(ForeignKey("document_sections.id"))
+    page: Mapped[int | None] = mapped_column(Integer)
+    cell_ref: Mapped[str | None] = mapped_column(String(32))
+    bbox: Mapped[Any | None] = mapped_column(JSON)
+    evidence_role: Mapped[str] = mapped_column(String(16), default="PRIMARY")
+    evidence_state: Mapped[str | None] = mapped_column(String(24))
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class ResolvedFieldHistory(Base):
+    """Append-only history of a resolved field (edits, confirmations, resolutions)."""
+
+    __tablename__ = "resolved_field_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    resolved_field_id: Mapped[int] = mapped_column(ForeignKey("resolved_fields.id"), index=True)
+    old_value: Mapped[str | None] = mapped_column(Text)
+    new_value: Mapped[str | None] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(String(128), default="local-user")
+    reason: Mapped[str | None] = mapped_column(Text)
+    resolution_method: Mapped[str | None] = mapped_column(String(24))
+    source_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AuditEvent(Base):

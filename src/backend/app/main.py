@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .api import documents, exports, jobs, review, shipments
+from .api import declaration, documents, exports, jobs, review, shipments
 from .config import load_settings
 from .db import create_all, dispose, init_engine
 from .deps import get_session, init_state
@@ -134,6 +134,7 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(documents.router, prefix="/api/v1")
     app.include_router(jobs.router, prefix="/api/v1")
     app.include_router(review.router, prefix="/api/v1")
+    app.include_router(declaration.router, prefix="/api/v1")
     app.include_router(exports.router, prefix="/api/v1")
 
     @app.get("/api/v1/files/{path:path}")

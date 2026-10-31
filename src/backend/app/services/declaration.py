@@ -27,6 +27,7 @@ from ..models import (
 from .export_excel import FieldSource
 from .export_tokhai import DeclarationPayload
 from .fields import ALL_FIELD_SPECS
+from .target_catalog import load_target_catalog
 
 # Order matters: the first match wins, and a conflicting duplicate is reported, not merged.
 DECLARATION_DOC_TYPES = ("CUSTOMS_DECLARATION", "CUSTOMS_DECLARATION_SCAN")
@@ -193,6 +194,199 @@ async def build_declaration_payload_from_fields(session: AsyncSession, shipment_
                 grounding_verified=f.grounding_verified,
             )
     return DeclarationPayload(header=header, goods=[], taxes=[], sources=sources)
+
+
+async def build_new_draft_payload(
+    session: AsyncSession,
+    shipment_id: int,
+    template_version: str = "tokhai_import_v1",
+) -> DeclarationPayload:
+    """Build the NEW_DRAFT payload from canonical `ResolvedField` rows only.
+
+    This is the single export source the reviewer edits: a value shown in the review
+    surface is exactly the value written to the workbook. Unresolved and ambiguous
+    fields stay blank, so a DRAFT cannot invent or inherit customs reference data.
+    """
+    from ..models import DeclarationFieldSource, ResolvedField
+
+    rows = (
+        await session.execute(
+            select(ResolvedField).where(
+                ResolvedField.shipment_id == shipment_id,
+                ResolvedField.template_version == template_version,
+            )
+        )
+    ).scalars().all()
+
+    header: dict[str, str | None] = {}
+    sources: dict[str, FieldSource] = {}
+    resolved_by_key = {row.target_key: row for row in rows}
+
+    # One query for primary evidence and one for the documents it points at: the
+    # review/export path runs per shipment, not per field.
+    evidence_by_field: dict[int, DeclarationFieldSource] = {}
+    docs_by_id: dict[int, Document] = {}
+    if rows:
+        evidence_rows = (
+            await session.execute(
+                select(DeclarationFieldSource).where(
+                    DeclarationFieldSource.resolved_field_id.in_([row.id for row in rows]),
+                    DeclarationFieldSource.evidence_role == "PRIMARY",
+                )
+            )
+        ).scalars().all()
+        for evidence in evidence_rows:
+            evidence_by_field.setdefault(evidence.resolved_field_id, evidence)
+        doc_ids = {e.document_id for e in evidence_rows if e.document_id}
+        if doc_ids:
+            for doc in (await session.execute(select(Document).where(Document.id.in_(doc_ids)))).scalars().all():
+                docs_by_id[doc.id] = doc
+
+    for key, spec in ALL_FIELD_SPECS.items():
+        if not key.startswith("declaration."):
+            continue
+        row = resolved_by_key.get(key)
+        allowed = row is not None and row.origin != "CUSTOMS_GENERATED" and row.document_role != "CUSTOMS_REFERENCE"
+        header[key] = row.value if allowed and row.state in {"RESOLVED", "NEEDS_REVIEW", "STALE_REVIEW"} else None
+        if row is not None and header[key] not in (None, "") and row.id is not None:
+            evidence = evidence_by_field.get(row.id)
+            if evidence is not None:
+                doc = docs_by_id.get(evidence.document_id) if evidence.document_id else None
+                sources[key] = FieldSource(
+                    document_filename=doc.filename if doc else None,
+                    document_id=evidence.document_id or 0,
+                    page=evidence.page,
+                    cell_ref=evidence.cell_ref,
+                    provenance_type="EXCEL_GRID" if doc and doc.file_ext in {".xls", ".xlsx", ".xlsm"} else "VLM",
+                    review_status=row.review_status,
+                    grounding_verified=evidence.evidence_state == "FACT_VERIFIED",
+                )
+
+    goods_by_seq: dict[int, dict[str, str | None]] = {}
+    for row in rows:
+        if not row.target_key.startswith("goods."):
+            continue
+        parts = row.target_key.split(".")
+        if len(parts) < 3:
+            continue
+        try:
+            seq = int(parts[1])
+        except ValueError:
+            continue
+        attr = parts[2]
+        bucket = goods_by_seq.setdefault(seq, {})
+        allowed = row.origin != "CUSTOMS_GENERATED" and row.document_role != "CUSTOMS_REFERENCE"
+        bucket[f"goods.{attr}"] = (
+            row.value if allowed and row.state in {"RESOLVED", "NEEDS_REVIEW", "STALE_REVIEW"} else None
+        )
+    goods = [dict(goods_by_seq[seq]) for seq in sorted(goods_by_seq)]
+
+    def is_confirmed(row) -> bool:
+        return row.review_status == "CONFIRMED" and row.state != "STALE_REVIEW"
+
+    declared = [row for row in rows if row.value not in (None, "")]
+    all_confirmed = bool(declared) and all(is_confirmed(row) for row in declared)
+    goods_rows = [row for row in rows if row.target_key.startswith("goods.") and row.value not in (None, "")]
+    goods_reviewed = bool(goods_rows) and all(is_confirmed(row) for row in goods_rows)
+    return DeclarationPayload(
+        header=header,
+        goods=goods,
+        taxes=[],
+        sources=sources,
+        review_status="CONFIRMED" if all_confirmed else "UNREVIEWED",
+        goods_reviewed=goods_reviewed,
+        required_keys=load_target_catalog(template_version).required_keys(),
+        confirmed_keys={row.target_key for row in rows if is_confirmed(row)},
+    )
+
+
+async def build_reference_mirror_payload(
+    session: AsyncSession,
+    shipment_id: int,
+    document_id: int,
+) -> DeclarationPayload:
+    """Mirror ONE named customs reference snapshot for audit. Never blended."""
+    doc = await session.get(Document, document_id)
+    if doc is None or doc.shipment_id != shipment_id:
+        raise ValueError("reference document không thuộc shipment này")
+    if (doc.doc_type or "") not in {"CUSTOMS_DECLARATION", "CUSTOMS_DECLARATION_SCAN"}:
+        raise ValueError("chứng từ được chọn không phải tờ khai tham chiếu")
+
+    fields = (
+        await session.execute(
+            select(ExtractedField).where(
+                ExtractedField.document_id == document_id,
+                ExtractedField.line_item_id.is_(None),
+            )
+        )
+    ).scalars().all()
+    header: dict[str, str | None] = {}
+    sources: dict[str, FieldSource] = {}
+    for f in fields:
+        if not f.field_key.startswith("declaration."):
+            continue
+        value = f.normalized_value if f.normalized_value is not None else f.raw_value
+        if value in (None, ""):
+            continue
+        header[f.field_key] = value
+        sources[f.field_key] = FieldSource(
+            document_filename=doc.filename,
+            document_id=doc.id,
+            page=f.page,
+            cell_ref=f.cell_ref,
+            provenance_type=f.provenance_type,
+            review_status=f.review_status,
+            grounding_verified=f.grounding_verified,
+        )
+    return DeclarationPayload(
+        header=header,
+        goods=[],
+        taxes=[],
+        sources=sources,
+        review_status=doc.doc_type or "REFERENCE",
+    )
+
+
+async def build_reference_comparison(
+    session: AsyncSession,
+    shipment_id: int,
+    template_version: str,
+    reference_document_id: int | None = None,
+) -> dict:
+    """Compare the new draft against one reference snapshot, field by field."""
+    from ..models import ResolvedField
+
+    draft = await build_new_draft_payload(session, shipment_id, template_version)
+    reference = (
+        await build_reference_mirror_payload(session, shipment_id, reference_document_id)
+        if reference_document_id
+        else None
+    )
+    rows = (
+        await session.execute(
+            select(ResolvedField).where(
+                ResolvedField.shipment_id == shipment_id,
+                ResolvedField.template_version == template_version,
+            )
+        )
+    ).scalars().all()
+    draft_values = {r.target_key: r.value for r in rows}
+    reference_values = reference.header if reference is not None else {}
+    keys = sorted(set(draft_values) | set(reference_values))
+    comparison = []
+    for key in keys:
+        mine = draft_values.get(key)
+        theirs = reference_values.get(key)
+        comparison.append(
+            {
+                "target_key": key,
+                "draft": mine,
+                "reference": theirs,
+                "same": mine == theirs,
+            }
+        )
+    return {"template_version": template_version, "reference_document_id": reference_document_id, "rows": comparison,
+            "reference_available": reference is not None}
 
 
 async def upsert_declaration(

@@ -9,9 +9,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..audit import record_audit
-from ..deps import get_settings, get_session
-from ..models import Document, ExportJob, ExtractedField, LineItem, Party, Shipment
-from ..services.declaration import build_declaration_payload, build_declaration_payload_from_fields
+from ..deps import get_llm, get_settings, get_session
+from ..models import Document, ExportJob, ExtractedField, LineItem, Party, ResolvedField, Shipment
+from ..services.declaration import (
+    build_new_draft_payload,
+    build_reference_comparison,
+    build_reference_mirror_payload,
+)
+from ..services.resolution import resolve_shipment
+from ..services.target_catalog import load_target_catalog
 from ..services.export_tokhai import TOKHAI_TEMPLATE_VERSION, write_tokhai_export
 from ..services.linegroup import group_line_items
 from ..services.export_excel import (
@@ -44,6 +50,32 @@ PARTY_KEYS = {
 
 class ExportRequest(BaseModel):
     template_version: str = DEFAULT_TEMPLATE_VERSION
+    # NEW_DRAFT: only input-derived / approved values, never customs reference data.
+    # REFERENCE_COMPARE: new draft plus a per-field difference report.
+    # REFERENCE_MIRROR: audit-only mirror of one named reference document.
+    mode: str = "NEW_DRAFT"
+    expected_revision: int | None = None
+    reference_document_id: int | None = None
+
+    @property
+    def normalized_mode(self) -> str:
+        mode = (self.mode or "NEW_DRAFT").strip().upper()
+        if mode in {"DRAFT", "FINAL"}:
+            # Backward-compatible names: FINAL still means a NEW_DRAFT export that must pass review.
+            return mode
+        return mode if mode in {"NEW_DRAFT", "REFERENCE_COMPARE", "REFERENCE_MIRROR"} else "NEW_DRAFT"
+
+
+async def current_resolution_revision(session: AsyncSession, shipment_id: int, template_version: str) -> int:
+    rows = (
+        await session.execute(
+            select(ResolvedField.revision).where(
+                ResolvedField.shipment_id == shipment_id,
+                ResolvedField.template_version == template_version,
+            )
+        )
+    ).scalars().all()
+    return max(rows) if rows else 0
 
 
 def _documents_in_order(docs: list[Document], preferred: list[str]) -> list[Document]:
@@ -218,6 +250,7 @@ async def create_export(
     body: ExportRequest,
     session: AsyncSession = Depends(get_session),
     settings=Depends(get_settings),
+    llm=Depends(get_llm),
 ):
     shipment = await session.get(Shipment, shipment_id)
     if shipment is None:
@@ -245,18 +278,66 @@ async def create_export(
         raise HTTPException(400, str(exc)) from exc
 
     if body.template_version == TOKHAI_TEMPLATE_VERSION:
-        declaration_payload = await build_declaration_payload(session, shipment_id)
-        if declaration_payload is None:
-            declaration_payload = await build_declaration_payload_from_fields(session, shipment_id)
+        mode = body.normalized_mode
+        comparison: dict | None = None
+        if body.expected_revision is not None:
+            actual = await current_resolution_revision(session, shipment_id, body.template_version)
+            if actual != body.expected_revision:
+                raise HTTPException(
+                    409,
+                    f"Phiên bản kết quả đã thay đổi (hiện tại {actual}, yêu cầu {body.expected_revision}). "
+                    "Tải lại trang xác nhận trước khi xuất.",
+                )
         try:
-            token_outcome = write_tokhai_export(
-                shipment.code, declaration_payload, template_version=body.template_version, export_dir=export_dir
-            )
+            if mode == "REFERENCE_MIRROR":
+                if not body.reference_document_id:
+                    raise HTTPException(422, "Chế độ REFERENCE_MIRROR cần reference_document_id")
+                declaration_payload = await build_reference_mirror_payload(
+                    session, shipment_id, body.reference_document_id
+                )
+                token_outcome = write_tokhai_export(
+                    shipment.code,
+                    declaration_payload,
+                    template_version=body.template_version,
+                    export_dir=export_dir,
+                    mode_label="REFERENCE_MIRROR",
+                )
+            else:
+                # NEW_DRAFT and REFERENCE_COMPARE both start from a fresh resolution,
+                # so the workbook can never fall back to the legacy per-document mirror.
+                resolution = await resolve_shipment(session, shipment_id, body.template_version, llm)
+                if resolution.stale:
+                    await session.rollback()
+                    raise HTTPException(
+                        409,
+                        "Dữ liệu nguồn đã thay đổi trong lúc resolve; chưa xuất file. "
+                        "Chạy lại resolve rồi thử lại.",
+                    )
+                await session.commit()
+                declaration_payload = await build_new_draft_payload(session, shipment_id, body.template_version)
+                if mode == "REFERENCE_COMPARE":
+                    comparison = await build_reference_comparison(
+                        session, shipment_id, body.template_version, body.reference_document_id
+                    )
+                token_outcome = write_tokhai_export(
+                    shipment.code,
+                    declaration_payload,
+                    template_version=body.template_version,
+                    export_dir=export_dir,
+                    requested_mode="FINAL" if body.normalized_mode == "FINAL" else None,
+                    required_keys=load_target_catalog(body.template_version).required_keys(),
+                )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         except ExportError as exc:
             raise HTTPException(422, str(exc)) from exc
-        return await _save_export(
+        payload = await _save_export(
             session, shipment, mapping, body.template_version, token_outcome
         )
+        payload["mode_requested"] = mode
+        if comparison is not None:
+            payload["comparison"] = comparison
+        return payload
 
     values, sources, line_payload = await build_export_payload(session, shipment)
     try:

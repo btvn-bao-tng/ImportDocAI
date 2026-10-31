@@ -25,11 +25,18 @@ TRANSPORT_FIELDS = (
     FieldSpec("transport.voyage", "Chuyến", "text"),
     FieldSpec("transport.waybill_no", "Số vận đơn", "text", critical=True),
     FieldSpec("transport.container_no", "Số container", "text", critical=True),
+    FieldSpec("transport.container_count", "Số lượng container", "int"),
     FieldSpec("transport.seal_no", "Số seal", "text"),
     FieldSpec("transport.packages", "Số kiện", "int"),
+    FieldSpec("transport.package_unit", "Đơn vị số kiện", "text"),
     FieldSpec("transport.gross_weight_kg", "Gross weight (kg)", "decimal", critical=True),
+    FieldSpec("transport.gross_weight_unit", "Đơn vị gross weight", "text"),
     FieldSpec("transport.net_weight_kg", "Net weight (kg)", "decimal", critical=True),
     FieldSpec("transport.volume_cbm", "Thể tích (m³)", "decimal", critical=True),
+    FieldSpec("transport.origin_country_code", "Mã nước xuất xứ", "text"),
+    FieldSpec("transport.arrival_date", "Ngày hàng đến (ETA)", "date"),
+    FieldSpec("transport.payment_method", "Phương thức thanh toán", "text"),
+    FieldSpec("transport.invoice_terms", "Điều kiện giao hàng", "text"),
 )
 
 LINE_FIELDS = (
@@ -37,10 +44,14 @@ LINE_FIELDS = (
     FieldSpec("line.description", "Mô tả hàng", "text"),
     FieldSpec("line.spec", "Quy cách", "text"),
     FieldSpec("line.components", "Quy cách thành phần", "text"),
+    FieldSpec("line.hs_code", "Mã HS trên chứng từ", "text"),
+    FieldSpec("line.origin_country_code", "Mã nước xuất xứ dòng hàng", "text"),
+    FieldSpec("line.container_no", "Số container dòng hàng", "text"),
     FieldSpec("line.quantity", "Số lượng", "decimal", critical=True),
     FieldSpec("line.unit", "Đơn vị", "unit"),
     FieldSpec("line.unit_price", "Đơn giá", "decimal", critical=True),
     FieldSpec("line.amount", "Thành tiền", "decimal", critical=True),
+    FieldSpec("line.currency", "Đồng tiền dòng hàng", "currency"),
 )
 
 PARTY_FIELDS = (
@@ -51,19 +62,37 @@ PARTY_FIELDS = (
     FieldSpec("party.notify", "Bên thông báo", "text"),
 )
 
+# Per-role party attributes needed by a new customs draft: a company name alone is
+# not enough for the importer/exporter blocks of the TKN header.
+PARTY_ATTRIBUTE_FIELDS = tuple(
+    FieldSpec(f"party.{role.lower()}.{attr}", label, kind)
+    for role, label in (
+        ("SELLER", "Bên bán"),
+        ("BUYER", "Bên mua"),
+        ("SHIPPER", "Người gửi hàng"),
+        ("CONSIGNEE", "Người nhận hàng"),
+    )
+    for attr, label, kind in (
+        ("address", "Địa chỉ", "text"),
+        ("tax_code", "Mã số thuế", "text"),
+        ("phone", "Điện thoại", "text"),
+        ("country_code", "Mã nước", "text"),
+    )
+)
+
 TOTAL_FIELDS = (
     FieldSpec("totals.total_amount", "Tổng trị giá", "decimal", critical=True),
     FieldSpec("totals.currency", "Đồng tiền", "currency", critical=True),
 )
 
 EXTRACTABLE_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
-    "COMMERCIAL_INVOICE": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_FIELDS + LINE_FIELDS + TOTAL_FIELDS,
-    "PACKING_LIST": COMMON_FIELDS + TRANSPORT_FIELDS + LINE_FIELDS,
-    "TRANSPORT_DOCUMENT": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_FIELDS,
-    "SALES_CONTRACT_PO": COMMON_FIELDS + PARTY_FIELDS + LINE_FIELDS + TOTAL_FIELDS,
-    "ARRIVAL_NOTICE": COMMON_FIELDS + TRANSPORT_FIELDS,
-    "SERVICE_CONTRACT": COMMON_FIELDS + PARTY_FIELDS + TOTAL_FIELDS,
-    "EXPORT_DECLARATION": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_FIELDS + TOTAL_FIELDS,
+    "COMMERCIAL_INVOICE": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_FIELDS + PARTY_ATTRIBUTE_FIELDS + LINE_FIELDS + TOTAL_FIELDS,
+    "PACKING_LIST": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_ATTRIBUTE_FIELDS + LINE_FIELDS,
+    "TRANSPORT_DOCUMENT": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_FIELDS + PARTY_ATTRIBUTE_FIELDS,
+    "SALES_CONTRACT_PO": COMMON_FIELDS + PARTY_FIELDS + PARTY_ATTRIBUTE_FIELDS + LINE_FIELDS + TOTAL_FIELDS,
+    "ARRIVAL_NOTICE": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_ATTRIBUTE_FIELDS,
+    "SERVICE_CONTRACT": COMMON_FIELDS + PARTY_FIELDS + PARTY_ATTRIBUTE_FIELDS + TOTAL_FIELDS,
+    "EXPORT_DECLARATION": COMMON_FIELDS + TRANSPORT_FIELDS + PARTY_FIELDS + PARTY_ATTRIBUTE_FIELDS + TOTAL_FIELDS,
     "CERTIFICATE_OF_ORIGIN": COMMON_FIELDS,
     "INSURANCE_POLICY": COMMON_FIELDS + TOTAL_FIELDS,
     "PHYTOSANITARY_CERTIFICATE": COMMON_FIELDS,

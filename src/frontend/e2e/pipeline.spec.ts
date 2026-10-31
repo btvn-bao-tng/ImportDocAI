@@ -150,7 +150,7 @@ test.describe("review page", () => {
 });
 
 test.describe("export page", () => {
-  test("rejects the Tờ khai export when no declaration was extracted", async ({ page }) => {
+  test("exports the Tờ khai as a NEW_DRAFT built from business inputs", async ({ page }) => {
     await createShipment(page, shipmentCode());
     await processSampleDocument(page);
     const shipmentId = Number(/shipments\/(\d+)/.exec(page.url())?.[1]);
@@ -158,12 +158,22 @@ test.describe("export page", () => {
 
     await expect(page.getByRole("heading", { name: "Xuất file theo mẫu" })).toBeVisible();
     await page.getByLabel("Mẫu Excel").selectOption("tokhai_import_v1");
-    await expect(page.getByText("Chưa có dữ liệu tờ khai để điền")).toBeVisible({ timeout: 20_000 });
+
+    // Resolution turns the transport document's business facts (waybill, vessel,
+    // weights) into Tờ khai inputs, so the preview is populated even though no
+    // customs declaration document exists.
+    await expect(page.getByText("Ô đã điền")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Số vận đơn").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Tạo file Excel" }).click();
-    const alert = page.getByRole("alert").filter({ hasText: "Không xuất được file" });
-    await expect(alert).toBeVisible({ timeout: 20_000 });
-    await expect(alert).toContainText("tờ khai");
+    await expect(page.getByRole("heading", { name: "Đã tạo file Excel" })).toBeVisible({ timeout: 30_000 });
+    // Customs-generated values (declaration number, exchange rate) cannot be filled
+    // from business inputs, so the workbook stays a reviewable DRAFT.
+    await expect(page.getByText("Bản nháp (DRAFT)")).toBeVisible();
+
+    const download = page.waitForEvent("download");
+    await page.getByRole("link", { name: "Tải file Excel" }).click();
+    expect((await download).suggestedFilename()).toMatch(/\.xlsx$/);
   });
 
   test("exports the uandi template to a downloadable xlsx", async ({ page }) => {

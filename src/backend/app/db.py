@@ -27,7 +27,11 @@ def init_engine(settings: Settings):
                 cur = dbapi_conn.cursor()
                 cur.execute("PRAGMA journal_mode=WAL")
                 cur.execute("PRAGMA foreign_keys=ON")
-                cur.execute("PRAGMA busy_timeout=5000")
+                # API and worker are separate processes sharing one SQLite file, and a
+                # job processes documents in parallel: short write transactions from
+                # several connections queue up behind each other, so the wait budget
+                # must cover a burst of persists, not one round trip.
+                cur.execute("PRAGMA busy_timeout=30000")
                 cur.close()
 
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
@@ -97,7 +101,11 @@ def _add_missing_columns(sync_conn) -> None:
 # Unique keys that newer code relies on for `INSERT ... ON CONFLICT` and that `create_all`
 # never adds to a table that already exists. On a fresh file `create_all` has already
 # created them, so this is a no-op there.
-_REQUIRED_UNIQUE_INDEXES = (("uq_declaration_shipment", "declarations", "shipment_id"),)
+_REQUIRED_UNIQUE_INDEXES = (
+    ("uq_declaration_shipment", "declarations", "shipment_id"),
+    ("uq_resolved_field_target", "resolved_fields", "shipment_id, target_key, template_version"),
+    ("uq_document_section_range", "document_sections", "document_id, page_start, page_end"),
+)
 
 
 def _add_missing_unique_indexes(sync_conn) -> None:
@@ -121,7 +129,6 @@ def _add_missing_unique_indexes(sync_conn) -> None:
             )
             continue
         sync_conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {table} ({column})"))
-
 
 async def dispose() -> None:
     global _engine, _sessionmaker

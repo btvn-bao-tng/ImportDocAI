@@ -67,6 +67,18 @@ class DeclarationPayload:
     licenses: list[dict[str, str | None]] = field(default_factory=list)
     instructions: list[dict[str, str | None]] = field(default_factory=list)
     adjustments: list[dict[str, str | None]] = field(default_factory=list)
+    # For a NEW_DRAFT the required set comes from the target catalog: fields the
+    # customs system generates (declaration number, exchange rate, channel) are
+    # critical to the finished form but must not block a draft that cannot have them.
+    required_keys: list[str] | None = None
+    # Target keys a human has confirmed. When supplied this is authoritative per field,
+    # so one unconfirmed non-required value cannot block an otherwise complete draft.
+    confirmed_keys: set[str] | None = None
+
+    def _required(self, key: str) -> bool:
+        if self.required_keys is None:
+            return is_critical(key)
+        return key in self.required_keys
 
     def unreviewed_critical(self) -> list[str]:
         """Critical fields that exist but no human has confirmed.
@@ -75,29 +87,36 @@ class DeclarationPayload:
         reviewed. Fields sourced from a scan must always be reviewed (page-level only).
         """
         unreviewed: list[str] = []
-        if self.review_status in UNREVIEWED_STATUSES:
-            for key, value in self.header.items():
-                if value not in (None, "") and is_critical(key):
+        for key, value in self.header.items():
+            if value in (None, "") or not self._required(key):
+                continue
+            if self.confirmed_keys is not None:
+                if key not in self.confirmed_keys:
                     unreviewed.append(key)
-        if self.goods and not self.goods_reviewed:
-            for idx, line in enumerate(self.goods, start=1):
-                for key, value in line.items():
-                    if key == "taxes":
-                        continue
-                    if value not in (None, "") and is_critical(key):
+            elif self.review_status in UNREVIEWED_STATUSES:
+                unreviewed.append(key)
+        for idx, line in enumerate(self.goods, start=1):
+            for key, value in line.items():
+                if key == "taxes" or value in (None, "") or not self._required(key):
+                    continue
+                if self.confirmed_keys is not None:
+                    attr = key.split(".", 1)[-1]
+                    if f"goods.{idx}.{attr}" not in self.confirmed_keys:
                         unreviewed.append(f"goods[{idx}].{key}")
+                elif not self.goods_reviewed:
+                    unreviewed.append(f"goods[{idx}].{key}")
         return unreviewed
 
     def critical_missing(self) -> list[str]:
         missing = []
         for key in self.header:
-            if self.header.get(key) in (None, "") and is_critical(key):
+            if self.header.get(key) in (None, "") and self._required(key):
                 missing.append(key)
         for idx, line in enumerate(self.goods, start=1):
             for key, value in line.items():
                 if key == "taxes":
                     continue
-                if value in (None, "") and is_critical(key):
+                if value in (None, "") and self._required(key):
                     missing.append(f"goods[{idx}].{key}")
         return missing
 
@@ -219,7 +238,12 @@ def write_tokhai_export(
     template_version: str = TOKHAI_TEMPLATE_VERSION,
     export_dir: Path | None = None,
     today: date | None = None,
+    requested_mode: str | None = None,
+    mode_label: str | None = None,
+    required_keys: list[str] | None = None,
 ) -> TokhaiOutcome:
+    if required_keys is not None:
+        payload.required_keys = list(required_keys)
     mapping, template_path = load_mapping(template_version)
     sheets = mapping.get("sheets") or {}
     tkn_map = sheets.get("TKN") or {}
@@ -264,10 +288,25 @@ def write_tokhai_export(
 
     # --- TKN header (page 1) and repeated header blocks on continuation pages -------
     tkn = wb["TKN"]
+    # The per-cell required decisions must agree with `payload.critical_missing()` /
+    # `unreviewed_critical()`, which already use `payload.required_keys`: when the
+    # caller did not pass an explicit set, a payload built by `build_new_draft_payload`
+    # still carries the catalog's required keys and must not fall back to the raw
+    # mapping-critical flags (those include customs-generated cells a new draft can
+    # never fill, which would make every such export report phantom missing fields).
+    required_set = (
+        set(required_keys) if required_keys is not None
+        else (set(payload.required_keys) if payload.required_keys is not None else None)
+    )
     for ref, spec in (tkn_map.get("scalars") or {}).items():
         key = spec["field"]
         for target in spec.get("page_refs") or [ref]:
-            required = bool(spec.get("critical")) and target == ref
+            required = (
+                bool(spec.get("critical"))
+                if required_set is None
+                else bool(spec.get("critical")) and key in required_set
+            )
+            required = required and target == ref
             write(tkn, "TKN", target, key, payload.header.get(key), required=required)
 
     _write_banner(tkn, payload.header.get("declaration.declaration_no"))
@@ -305,7 +344,12 @@ def write_tokhai_export(
             goods = payload.goods[idx]
             for ref, col in refs.items():
                 key = col["field"]
-                write(tkn, "TKN", ref, key, goods.get(key), required=bool(col.get("critical")))
+                required = (
+                    bool(col.get("critical"))
+                    if required_set is None
+                    else key in required_set
+                )
+                write(tkn, "TKN", ref, key, goods.get(key), required=required)
 
     # --- goods tax slots ("Thuế và thu khác" inside each goods block) ---------------
     tax_slot_map = tkn_map.get("goods_tax_slots") or {}
@@ -405,6 +449,16 @@ def write_tokhai_export(
     if unreviewed:
         warnings.append(f"Chưa xác nhận {len(unreviewed)} trường bắt buộc — file ở chế độ DRAFT")
     mode = "DRAFT" if missing or unresolved or no_goods or unreviewed else "FINAL"
+    if requested_mode == "FINAL" and mode != "FINAL":
+        raise ExportError(
+            "Không thể xuất FINAL: còn trường bắt buộc chưa có hoặc chưa được xác nhận. "
+            + "; ".join(warnings[-3:])
+        )
+    if mode_label == "REFERENCE_MIRROR":
+        # Audit-only mirror of one named reference: it never claims to be a new draft.
+        mode = "REFERENCE_MIRROR"
+    elif mode_label and mode == "FINAL":
+        mode = mode_label
 
     total_invoice = _declared_sum(payload.goods, "goods.invoice_amount")
     if total_invoice is not None:

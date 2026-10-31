@@ -1,0 +1,5 @@
+row_type,container_no,quantity,unit,unit_price,amount,currency,origin_country_code,eligibility,note
+invoice_container_item,HMMU6849510,46.46,CBM,250,11615,USD,AR,INPUT_SUPPORTED,Commercial invoice container row 1
+invoice_container_item,KOCU4411578,46.46,CBM,250,11615,USD,AR,INPUT_SUPPORTED,Commercial invoice container row 2
+customs_goods_line,,46.46,MTQ,250,11615,USD,AR,REQUIRES_USER,VNACCS goods line 1; eight-digit HS needs approval
+customs_goods_line,,46.46,MTQ,250,11615,USD,AR,REQUIRES_USER,VNACCS goods line 2; grouping policy decides cardinality

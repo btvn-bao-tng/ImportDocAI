@@ -9,7 +9,8 @@ import pymupdf as fitz
 from .constants import IngestError
 from .fields import ALL_FIELD_SPECS, DOCUMENT_LEVEL_ONLY, FieldSpec, fields_for, is_critical
 from .llm import LLMClient, LLMError, budget_for, ground_quote, locate_quote, normalize_bbox
-from .ingest import extract_pdf_words, render_pdf_page_png
+from .ingest import extract_pdf_words, normalize_doc_type, render_pdf_page_png
+from .page_router import build_page_manifests
 from .normalize import (
     normalize_company,
     normalize_currency,
@@ -19,6 +20,7 @@ from .normalize import (
     number_to_str,
 )
 from .schemas import (
+    CLASSIFY_PAGE_PROMPT,
     CLASSIFY_PROMPT,
     EXCEL_EXTRACT_PROMPT,
     EXTRACT_PROMPT,
@@ -28,6 +30,9 @@ from .schemas import (
 )
 
 DECLARATION_DOC_TYPES = {"CUSTOMS_DECLARATION", "CUSTOMS_DECLARATION_SCAN"}
+# Declaration rows keep their sparse encoding but shift past business line indexes.
+DECLARATION_LINE_OFFSET = 1000
+GOODS_TAX_ENCODING = 100
 
 FIELD_TO_MODEL_ATTR = {
     "document.doc_number": "doc_number",
@@ -37,11 +42,18 @@ FIELD_TO_MODEL_ATTR = {
     "transport.voyage": "voyage",
     "transport.waybill_no": "waybill_no",
     "transport.container_no": "container_no",
+    "transport.container_count": "container_count",
     "transport.seal_no": "seal_no",
     "transport.packages": "packages",
+    "transport.package_unit": "package_unit",
     "transport.gross_weight_kg": "gross_weight",
+    "transport.gross_weight_unit": "gross_weight_unit",
     "transport.net_weight_kg": "net_weight",
     "transport.volume_cbm": "volume",
+    "transport.origin_country_code": "origin_country_code",
+    "transport.arrival_date": "arrival_date",
+    "transport.payment_method": "payment_method",
+    "transport.invoice_terms": "invoice_terms",
     "totals.total_amount": "total_amount",
     "totals.currency": "currency",
 }
@@ -49,11 +61,17 @@ FIELD_TO_MODEL_ATTR = {
 LINE_TO_MODEL_ATTR = {
     "line.description": "description",
     "line.spec": "spec",
+    "line.hs_code": "hs_code",
+    "line.origin_country_code": "origin_country_code",
+    "line.container_no": "container_no",
     "line.quantity": "quantity",
     "line.unit": "unit",
     "line.unit_price": "unit_price",
     "line.amount": "amount",
+    "line.currency": "currency",
 }
+
+PARTY_ATTRIBUTE_KEYS = ("address", "tax_code", "phone", "country_code")
 
 @dataclass
 class ExtractedRow:
@@ -70,6 +88,10 @@ class ExtractedRow:
     review_status: str
     critical: bool
     line_index: int | None = None
+    section_type: str | None = None
+    source_row_index: int | None = None
+    container_no: str | None = None
+    evidence_state: str | None = None
 
 
 def normalize_field_value(spec: FieldSpec, raw: str | None, locale: str | None) -> tuple[str | None, str | None]:
@@ -123,22 +145,16 @@ def _content_budget(text: str, limit: int = 24000) -> str:
     return text if len(text) <= limit else text[:limit] + "\n...[rút gọn]"
 
 
-def _grid_content(grid: dict, limit: int = 60) -> str:
-    from openpyxl.utils import get_column_letter
+def _grid_content(grid: dict, limit: int | None = None, ranges: dict | None = None) -> str:
+    """Full sparse dump of the workbook (every non-empty cell), delegated to excel_reader.
 
-    chunks = []
-    for sheet in grid.get("sheets") or []:
-        name = sheet.get("name") or "Sheet"
-        chunks.append(f"### Sheet: {name}")
-        for r_idx, row in enumerate((sheet.get("rows") or [])[:limit], start=1):
-            cells = []
-            for c_idx, value in enumerate(row, start=1):
-                if value is None or str(value).strip() == "":
-                    continue
-                cells.append(f"{get_column_letter(c_idx)}{r_idx}={value}")
-            if cells:
-                chunks.append(" | ".join(cells))
-    return "\n".join(chunks)
+    `limit`/`ranges` are forwarded for callers that ask for one block; the default keeps
+    all rows so goods blocks at row 148/201 are not dropped.
+    """
+    from .excel_reader import render_grid
+
+    text, _truncated = render_grid(grid, limit=limit, ranges=ranges)
+    return text
 
 
 class ExtractionService:
@@ -148,6 +164,7 @@ class ExtractionService:
     async def classify(
         self, filename: str, path: Path, has_text: bool, pages: list[str], grid: dict | None = None
     ) -> ClassificationOut:
+        """Classify a whole file. Kept for Excel and single-page callers."""
         if grid is not None:
             raw = await self.llm.complete_json_validated(
                 render_prompt(CLASSIFY_PROMPT, filename=filename, content=_content_budget(_grid_content(grid), 6000)),
@@ -181,6 +198,116 @@ class ExtractionService:
         )
         return raw
 
+    async def classify_document(
+        self, filename: str, path: Path, pages: list[str], grid: dict | None = None
+    ) -> ClassificationOut:
+        """Classify page by page and group adjacent pages into document sections.
+
+        The old classifier looked only at `pages[:2]` (or page 1 for a scan), so a
+        10-page bundle whose first two pages were blank got `OTHER`, and a mixed PDF
+        could never report more than one document inside it.
+        """
+        from .page_router import (
+            SECTION_UNKNOWN,
+            STRATEGY_TEXT,
+            STRATEGY_TEXT_PLUS_VISION,
+            STRATEGY_VISION,
+            build_page_manifests,
+            group_sections,
+        )
+
+        if grid is not None or len(pages) <= 1:
+            if grid is not None:
+                return await self.classify(filename, path, True, pages, grid)
+            manifests = build_page_manifests(path, pages)
+            manifest = manifests[0]
+            if manifest.strategy == STRATEGY_VISION:
+                # A page number or watermark is not content: classify from the image.
+                png = (
+                    render_pdf_page_png(path, manifest.index)
+                    if path.suffix.lower() == ".pdf"
+                    else path.read_bytes()
+                )
+                base = await self.llm.complete_json_validated(
+                    render_prompt(CLASSIFY_PAGE_PROMPT, filename=filename, page=1, content="(hình ảnh trang 1)"),
+                    "classification",
+                    None,
+                    lambda data: ClassificationOut.model_validate(data),
+                    image_png=png,
+                    max_tokens=budget_for(3, False),
+                    model_override=self.llm.extraction_model(),
+                )
+            else:
+                base = await self.classify(filename, path, bool(manifest.text_chars), pages, None)
+            sections = group_sections(manifests, [normalize_doc_type(base.doc_type)])
+            base.sections = [s.as_dict() for s in sections]
+            return base
+
+        manifests = build_page_manifests(path, pages)
+        page_types: list[str | None] = []
+        confidences: list[float] = []
+        for manifest in manifests:
+            try:
+                if manifest.strategy in {STRATEGY_TEXT, STRATEGY_TEXT_PLUS_VISION} and manifest.text_chars > 0:
+                    content = _content_budget(manifest.text, 6000)
+                    raw = await self.llm.complete_json_validated(
+                        render_prompt(
+                            CLASSIFY_PAGE_PROMPT,
+                            filename=filename,
+                            page=manifest.index + 1,
+                            content=content,
+                        ),
+                        "classification",
+                        None,
+                        lambda data: ClassificationOut.model_validate(data),
+                        max_tokens=budget_for(3, False),
+                        model_override=self.llm.extraction_model(),
+                    )
+                else:
+                    png = (
+                        render_pdf_page_png(path, manifest.index)
+                        if path.suffix.lower() == ".pdf"
+                        else path.read_bytes()
+                    )
+                    raw = await self.llm.complete_json_validated(
+                        render_prompt(
+                            CLASSIFY_PAGE_PROMPT,
+                            filename=filename,
+                            page=manifest.index + 1,
+                            content=f"(hình ảnh trang {manifest.index + 1})",
+                        ),
+                        "classification",
+                        None,
+                        lambda data: ClassificationOut.model_validate(data),
+                        image_png=png,
+                        max_tokens=budget_for(3, False),
+                        model_override=self.llm.extraction_model(),
+                    )
+                page_types.append(normalize_doc_type(raw.doc_type))
+                if raw.confidence is not None:
+                    confidences.append(float(raw.confidence))
+            except Exception:
+                page_types.append(None)
+
+        sections = group_sections(manifests, page_types)
+        counts: dict[str, int] = {}
+        for page_type in page_types:
+            key = page_type or SECTION_UNKNOWN
+            counts[key] = counts.get(key, 0) + 1
+        ranked = sorted(
+            ((k, v) for k, v in counts.items() if k not in {SECTION_UNKNOWN, "OTHER"}),
+            key=lambda item: (-item[1], item[0]),
+        )
+        dominant = ranked[0][0] if ranked else "OTHER"
+        confidence = sum(confidences) / len(confidences) if confidences else None
+        return ClassificationOut(
+            doc_type=dominant,
+            confidence=confidence,
+            reason=f"{len(sections)} đoạn từ {len(pages)} trang",
+            sections=[s.as_dict() for s in sections],
+        )
+
+
     async def extract(self, doc_type: str, filename: str, path: Path, pages: list[str], grid: dict | None) -> list[ExtractedRow]:
         if doc_type in DECLARATION_DOC_TYPES:
             return await self._extract_declaration(doc_type, filename, path, pages, grid)
@@ -189,7 +316,7 @@ class ExtractionService:
         if grid is not None:
             content = _grid_content(grid)
             result = await self.llm.complete_json_validated(
-                render_prompt(EXCEL_EXTRACT_PROMPT, doc_type=doc_type, content=content, limit=60),
+                render_prompt(EXCEL_EXTRACT_PROMPT, doc_type=doc_type, content=content, limit="toàn bộ"),
                 "extraction",
                 None,
                 lambda data: ExtractionOut.model_validate(data),
@@ -200,10 +327,44 @@ class ExtractionService:
                 result = _strip_line_items(result)
             return self._rows_from_result(specs, result, provenance="CELL", pages=[], grid=grid, path=path, doc_type=doc_type)
 
+        # Route per page, not per file: one text page anywhere used to suppress the
+        # vision pass for every scanned page (the TAEDA invoice lives on a scan).
+        manifests = build_page_manifests(path, pages)
+        return await self._extract_by_page_routing(
+            specs, metadata_only, filename, path, doc_type, pages, manifests
+        )
+
+    async def _extract_by_page_routing(
+        self,
+        specs: tuple[FieldSpec, ...],
+        metadata_only: bool,
+        filename: str,
+        path: Path,
+        doc_type: str,
+        pages: list[str],
+        manifests: list,
+    ) -> list[ExtractedRow]:
+        from .page_router import (
+            STRATEGY_TEXT,
+            STRATEGY_TEXT_PLUS_VISION,
+            STRATEGY_VISION,
+        )
+
+        # Follow the router: a page routed VISION or TEXT_PLUS_VISION always gets an
+        # image call, even when its text layer is non-empty.
+        text_only = [
+            m.index for m in manifests if m.strategy == STRATEGY_TEXT and m.text_chars > 0
+        ]
+        tpv_pages = [
+            m.index for m in manifests if m.strategy == STRATEGY_TEXT_PLUS_VISION
+        ]
+        vision_pages = [
+            m.index for m in manifests if m.strategy in {STRATEGY_VISION, STRATEGY_TEXT_PLUS_VISION}
+        ]
+
         rows: list[ExtractedRow] = []
-        text_pages = [i for i, p in enumerate(pages) if len(p.strip()) > 30]
-        if text_pages:
-            joined = _content_budget("\n\n".join(pages[i] for i in text_pages))
+        if text_only:
+            joined = _content_budget("\n\n".join(pages[i] for i in text_only))
             result = await self.llm.complete_json_validated(
                 render_prompt(EXTRACT_PROMPT, doc_type=doc_type, filename=filename, content=joined),
                 "extraction",
@@ -214,22 +375,37 @@ class ExtractionService:
             )
             if metadata_only:
                 result = _strip_line_items(result)
-            # locate each quote on the page that actually contains it, not always page 1
-            for page_index in text_pages:
-                page_rows = self._rows_from_result(
-                    specs, result, provenance="TEXT_LAYER", pages=pages, grid=None, path=path, doc_type=doc_type, page=page_index
-                )
-                for row in page_rows:
-                    if row.raw_value is not None and row.grounding_verified:
-                        row.confidence = row.confidence or 1.0
-                if page_index == text_pages[0]:
-                    rows = page_rows
-                else:
-                    rows = _merge_located(rows, page_rows)
-            return rows
+            text_rows = self._rows_from_result(
+                specs, result, provenance="TEXT_LAYER", pages=pages, grid=None, path=path,
+                doc_type=doc_type, page=text_only[0],
+            )
+            rows = _merge_evidence(rows, text_rows)
 
+        # A TEXT_PLUS_VISION page needs its own text call: a joined pass would label the
+        # row with the first text page, and the text/vision dedupe key would never match.
+        for page_index in tpv_pages:
+            result = await self.llm.complete_json_validated(
+                render_prompt(
+                    EXTRACT_PROMPT,
+                    doc_type=doc_type,
+                    filename=filename,
+                    content=_content_budget(pages[page_index]),
+                ),
+                "extraction",
+                None,
+                lambda data: ExtractionOut.model_validate(data),
+                max_tokens=budget_for(len(specs), not metadata_only),
+                model_override=self.llm.extraction_model(),
+            )
+            if metadata_only:
+                result = _strip_line_items(result)
+            text_rows = self._rows_from_result(
+                specs, result, provenance="TEXT_LAYER", pages=pages, grid=None, path=path,
+                doc_type=doc_type, page=page_index,
+            )
+            rows = _merge_evidence(rows, text_rows)
 
-        for page_index in range(len(pages) or 1):
+        for page_index in vision_pages:
             png = render_pdf_page_png(path, page_index) if path.suffix.lower() == ".pdf" else path.read_bytes()
             result = await self.llm.complete_json_validated(
                 render_prompt(EXTRACT_PROMPT, doc_type=doc_type, filename=filename, content=f"(hình ảnh trang {page_index + 1})"),
@@ -238,15 +414,185 @@ class ExtractionService:
                 lambda data: ExtractionOut.model_validate(data),
                 image_png=png,
             )
-            rows.extend(
-                self._rows_from_result(
-                    specs, result, provenance="IMAGE", pages=[], grid=None, path=path, doc_type=doc_type, page=page_index
-                )
+            if metadata_only:
+                result = _strip_line_items(result)
+            vision_rows = self._rows_from_result(
+                specs, result, provenance="IMAGE", pages=[], grid=None, path=path,
+                doc_type=doc_type, page=page_index,
             )
-        return self._merge_pages(rows)
+            rows = _merge_evidence(rows, vision_rows)
+        return rows
+
+
+    async def extract_sections(
+        self,
+        filename: str,
+        path: Path,
+        pages: list[str],
+        sections: list[dict],
+        fallback_doc_type: str,
+        grid: dict | None = None,
+    ) -> list[ExtractedRow]:
+        """Extract each logical section with the schema of its own type.
+
+        Sections are annotated page ranges; the uploaded file is never split or copied.
+        A single-section document is extracted exactly as before, so the per-file
+        behaviour is unchanged when the bundle really holds one document.
+        """
+        if grid is not None or not sections:
+            return await self.extract(fallback_doc_type, filename, path, pages, grid)
+        if len(sections) == 1:
+            section_type = sections[0].get("section_type") or fallback_doc_type
+            if section_type in {None, "", "UNKNOWN", "MIXED_BUNDLE"}:
+                section_type = fallback_doc_type
+            return await self.extract(section_type, filename, path, pages, None)
+
+        rows: list[ExtractedRow] = []
+        declaration_sections_seen = 0
+        for section in sections:
+            section_type = section.get("section_type") or fallback_doc_type
+            if section_type in {"UNKNOWN", "MIXED_BUNDLE", ""}:
+                section_type = fallback_doc_type
+            page_indexes = [int(p) for p in section.get("pages") or []]
+            section_pages = [
+                pages[i] if 0 <= i < len(pages) else "" for i in page_indexes
+            ]
+            if not section_pages:
+                continue
+            if section_type in DECLARATION_DOC_TYPES:
+                section_rows = await self._extract_declaration(
+                    section_type, filename, path, section_pages, None, page_indexes
+                )
+                if len(sections) > 1:
+                    # Declaration rows share the flat line_index/compound tax encoding;
+                    # in a bundle they must not collide with the invoice's line indexes,
+                    # and two declaration sections must not collide with each other.
+                    declaration_sections_seen += 1
+                    goods_offset = DECLARATION_LINE_OFFSET * declaration_sections_seen
+                    for row in section_rows:
+                        if row.line_index is None:
+                            continue
+                        if row.field_key.startswith("goods_tax."):
+                            row.line_index += goods_offset * GOODS_TAX_ENCODING
+                        elif row.field_key.startswith("goods."):
+                            row.line_index += goods_offset
+            else:
+                section_rows = await self._extract_pages_as_type(
+                    section_type, filename, path, pages, page_indexes
+                )
+            for row in section_rows:
+                row.section_type = section_type
+            rows = _merge_evidence(rows, section_rows)
+        return rows
+
+    async def _extract_pages_as_type(
+        self,
+        doc_type: str,
+        filename: str,
+        path: Path,
+        pages: list[str],
+        page_indexes: list[int],
+    ) -> list[ExtractedRow]:
+        from .page_router import STRATEGY_TEXT, STRATEGY_TEXT_PLUS_VISION
+
+        specs = fields_for(doc_type)
+        metadata_only = doc_type in DOCUMENT_LEVEL_ONLY
+        manifests = build_page_manifests(path, pages)
+
+        def strategy_of(index: int) -> str:
+            if index < len(manifests):
+                return manifests[index].strategy
+            return STRATEGY_TEXT
+
+        rows: list[ExtractedRow] = []
+        text_only = [
+            i for i in page_indexes if i < len(pages) and strategy_of(i) == STRATEGY_TEXT and pages[i].strip()
+        ]
+        tpv_indexes = [i for i in page_indexes if i < len(pages) and strategy_of(i) == STRATEGY_TEXT_PLUS_VISION]
+        if text_only:
+            joined = _content_budget("\n\n".join(pages[i] for i in text_only))
+            result = await self.llm.complete_json_validated(
+                render_prompt(EXTRACT_PROMPT, doc_type=doc_type, filename=filename, content=joined),
+                "extraction",
+                None,
+                lambda data: ExtractionOut.model_validate(data),
+                max_tokens=budget_for(len(specs), not metadata_only),
+                model_override=self.llm.extraction_model(),
+            )
+            if metadata_only:
+                result = _strip_line_items(result)
+            rows = _merge_evidence(
+                rows,
+                self._rows_from_result(
+                    specs, result, provenance="TEXT_LAYER", pages=pages, grid=None,
+                    path=path, doc_type=doc_type, page=text_only[0],
+                ),
+            )
+        # Per-page text call for TEXT_PLUS_VISION pages, so the row keeps its own page
+        # label and the text/vision identity key can match.
+        for page_index in tpv_indexes:
+            result = await self.llm.complete_json_validated(
+                render_prompt(
+                    EXTRACT_PROMPT,
+                    doc_type=doc_type,
+                    filename=filename,
+                    content=_content_budget(pages[page_index]),
+                ),
+                "extraction",
+                None,
+                lambda data: ExtractionOut.model_validate(data),
+                max_tokens=budget_for(len(specs), not metadata_only),
+                model_override=self.llm.extraction_model(),
+            )
+            if metadata_only:
+                result = _strip_line_items(result)
+            rows = _merge_evidence(
+                rows,
+                self._rows_from_result(
+                    specs, result, provenance="TEXT_LAYER", pages=pages, grid=None,
+                    path=path, doc_type=doc_type, page=page_index,
+                ),
+            )
+        for page_index in page_indexes:
+            manifest = manifests[page_index] if page_index < len(manifests) else None
+            if manifest is None or manifest.strategy not in {"VISION", "TEXT_PLUS_VISION"}:
+                continue
+            png = (
+                render_pdf_page_png(path, page_index)
+                if path.suffix.lower() == ".pdf"
+                else path.read_bytes()
+            )
+            result = await self.llm.complete_json_validated(
+                render_prompt(
+                    EXTRACT_PROMPT,
+                    doc_type=doc_type,
+                    filename=filename,
+                    content=f"(hình ảnh trang {page_index + 1})",
+                ),
+                "extraction",
+                None,
+                lambda data: ExtractionOut.model_validate(data),
+                image_png=png,
+            )
+            if metadata_only:
+                result = _strip_line_items(result)
+            rows = _merge_evidence(
+                rows,
+                self._rows_from_result(
+                    specs, result, provenance="IMAGE", pages=[], grid=None,
+                    path=path, doc_type=doc_type, page=page_index,
+                ),
+            )
+        return rows
 
     async def _extract_declaration(
-        self, doc_type: str, filename: str, path: Path, pages: list[str], grid: dict | None
+        self,
+        doc_type: str,
+        filename: str,
+        path: Path,
+        pages: list[str],
+        grid: dict | None,
+        page_indexes: list[int] | None = None,
     ) -> list[ExtractedRow]:
         """Extract a Tờ khai: header + goods blocks + tax table.
 
@@ -259,6 +605,7 @@ class ExtractionService:
         result: DeclarationExtractionOut
         provenance: str
         page_no: int | None
+        local_page_no: int | None = None
         if grid is not None:
             raw = await self.llm.complete_json_validated(
                 render_prompt(DECLARATION_EXTRACT_PROMPT, filename=filename, content=_grid_content(grid)),
@@ -279,9 +626,13 @@ class ExtractionService:
                 max_tokens=budget_for(90, True),
                 model_override=self.llm.extraction_model(),
             )
-            provenance, page_no = "TEXT_LAYER", text_pages[0] + 1
+            first_local = text_pages[0]
+            local_page_no = first_local
+            absolute = page_indexes[first_local] if page_indexes and first_local < len(page_indexes) else first_local
+            provenance, page_no = "TEXT_LAYER", absolute + 1
         else:
-            png = render_pdf_page_png(path, 0) if path.suffix.lower() == ".pdf" else path.read_bytes()
+            absolute = page_indexes[0] if page_indexes else 0
+            png = render_pdf_page_png(path, absolute) if path.suffix.lower() == ".pdf" else path.read_bytes()
             result = await self.llm.complete_json_validated(
                 render_prompt(DECLARATION_EXTRACT_PROMPT, filename=filename, content="(xem hình ảnh tờ khai)"),
                 "extraction",
@@ -290,7 +641,7 @@ class ExtractionService:
                 image_png=png,
                 max_tokens=budget_for(90, True),
             )
-            provenance, page_no = "IMAGE", 1
+            provenance, page_no = "IMAGE", absolute + 1
 
         rows: list[ExtractedRow] = []
 
@@ -301,8 +652,8 @@ class ExtractionService:
             spec = ALL_FIELD_SPECS.get(field_key)
             quote = getattr(fv, "source_quote", None)
             grounded = False
-            if quote and provenance == "TEXT_LAYER" and page_no and page_no - 1 < len(pages):
-                grounded = quote.strip() in pages[page_no - 1]
+            if quote and provenance == "TEXT_LAYER" and local_page_no is not None and local_page_no < len(pages):
+                grounded = quote.strip() in pages[local_page_no]
             rows.append(
                 ExtractedRow(
                     field_key=field_key,
@@ -319,6 +670,7 @@ class ExtractionService:
                     review_status="UNREVIEWED",
                     critical=is_critical(field_key),
                     line_index=line_index,
+                    evidence_state=self._evidence_state(provenance, bool(grounded)),
                 )
             )
 
@@ -395,6 +747,7 @@ class ExtractionService:
                     grounding_verified=grounding,
                     review_status=self._review_status(spec, provenance, grounding, fv.value),
                     critical=is_critical(spec.key),
+                    evidence_state=self._evidence_state(provenance, grounding),
                 )
             )
 
@@ -417,8 +770,31 @@ class ExtractionService:
                     grounding_verified=grounding,
                     review_status="UNREVIEWED",
                     critical=False,
+                    evidence_state=self._evidence_state(provenance, grounding),
                 )
             )
+            role = (party.role or "").lower()
+            for attr in PARTY_ATTRIBUTE_KEYS:
+                value = getattr(party, attr, None)
+                if not value:
+                    continue
+                rows.append(
+                    ExtractedRow(
+                        field_key=f"party.{role}.{attr}",
+                        raw_value=value,
+                        normalized_value=normalize_company(value) if attr == "address" else str(value).strip(),
+                        unit=None,
+                        page=page + 1 if provenance in {"TEXT_LAYER", "IMAGE"} else None,
+                        bbox=None,
+                        cell_ref=None,
+                        confidence=None,
+                        provenance_type=provenance,
+                        grounding_verified=False,
+                        review_status="NEEDS_REVIEW",
+                        critical=False,
+                        evidence_state="EVIDENCE_LOCATED",
+                    )
+                )
 
         line_specs = [s for s in specs if s.key.startswith("line.")]
         for idx, item in enumerate(result.line_items):
@@ -444,9 +820,18 @@ class ExtractionService:
                         review_status=self._review_status(spec, provenance, grounding, fv.value),
                         critical=is_critical(spec.key),
                         line_index=idx,
+                        source_row_index=idx,
+                        container_no=_row_container_no(item),
+                        evidence_state=self._evidence_state(provenance, grounding),
                     )
                 )
         return rows
+
+    def _evidence_state(self, provenance: str, grounding: bool) -> str:
+        """A machine-checked quote is FACT_VERIFIED; a scan is only EVIDENCE_LOCATED."""
+        if provenance in {"TEXT_LAYER", "CELL"} and grounding:
+            return "FACT_VERIFIED"
+        return "EVIDENCE_LOCATED"
 
     def _ground(self, fv, provenance, page_text, words, page_size, grid) -> tuple[bool, list[float] | None]:
         if fv.value is None:
@@ -473,34 +858,20 @@ class ExtractionService:
             return "NEEDS_REVIEW"
         return "UNREVIEWED"
 
-    def _merge_pages(self, rows: list[ExtractedRow]) -> list[ExtractedRow]:
-        merged: dict[str, ExtractedRow] = {}
-        line_rows: list[ExtractedRow] = []
-        for row in rows:
-            if row.line_index is not None:
-                line_rows.append(row)
-                continue
-            if row.raw_value is None:
-                continue
-            existing = merged.get(row.field_key)
-            if existing is None or existing.raw_value is None:
-                merged[row.field_key] = row
-        ordered = [merged[k] for k in sorted(merged)]
-        base = self._line_base(rows)
-        line_ordered = sorted(line_rows, key=lambda r: (r.line_index or 0, r.field_key))
-        result = []
-        for row in base:
-            chosen = merged.get(row.field_key)
-            result.append(chosen if chosen is not None else row)
-        return result + line_ordered
 
-    @staticmethod
-    def _line_base(rows: list[ExtractedRow]) -> list[ExtractedRow]:
-        seen: dict[str, ExtractedRow] = {}
-        for row in rows:
-            if row.line_index is None and row.field_key not in seen:
-                seen[row.field_key] = row
-        return list(seen.values())
+def _row_container_no(item) -> str | None:
+    """Container-level invoice rows keep their container id as row identity."""
+    import re
+
+    for attr in ("container_no", "description", "spec"):
+        fv = getattr(item, attr, None)
+        value = getattr(fv, "value", None) if fv is not None else None
+        if not value:
+            continue
+        match = re.search(r"\b([A-Z]{4}\d{7})\b", str(value))
+        if match:
+            return match.group(1)
+    return None
 
 
 def _cell_contains(grid: dict, cell_ref: str, value: str) -> bool:
@@ -539,14 +910,96 @@ def _strip_line_items(result: ExtractionOut) -> ExtractionOut:
     return result.model_copy(update={"line_items": []})
 
 
-def _merge_located(primary: list[ExtractedRow], located: list[ExtractedRow]) -> list[ExtractedRow]:
-    """Keep the first grounded row per field key, filling in ones only located on later pages."""
-    by_key = {row.field_key: row for row in primary if row.line_index is None}
-    line_rows = [row for row in primary if row.line_index is not None]
-    for row in located:
-        if row.line_index is not None:
+def _merge_evidence(primary: list[ExtractedRow], extra: list[ExtractedRow]) -> list[ExtractedRow]:
+    """Merge two extraction passes, keeping every disagreeing candidate.
+
+    The old code let the text-layer pass win outright, so a scanned page that carried
+    a different (or the only) value was silently dropped. Here document-level fields
+    are merged by value: identical values collapse to one row (preferring a grounded
+    one), while different values are kept side by side and both marked NEEDS_REVIEW.
+    Line items are never de-duplicated across passes, because two pages showing the
+    same product are still two source rows.
+    """
+    rows = list(primary)
+    by_key: dict[str, list[ExtractedRow]] = {}
+    for row in rows:
+        if row.line_index is None and row.raw_value is not None:
+            by_key.setdefault(row.field_key, []).append(row)
+    # Each extraction pass numbers its rows from 0. Merging two passes (two scanned
+    # pages, or a bundle's invoice and packing sections) would otherwise collapse two
+    # different rows into one LineItem, so give each source row a fresh document index.
+    used_indexes = [r.line_index for r in rows if r.line_index is not None]
+    next_index = (max(used_indexes) + 1) if used_indexes else 1
+    line_key_map: dict[tuple, int] = {}
+    # Seed from the primary pass so the same physical row read by both text and vision
+    # is recognised instead of becoming a second LineItem.
+    for row in rows:
+        if row.field_key.startswith("line.") and row.line_index is not None:
+            key = (row.page, row.section_type, row.source_row_index, row.container_no)
+            line_key_map.setdefault(key, row.line_index)
+    for candidate in extra:
+        if candidate.line_index is not None:
+            if candidate.field_key.startswith("line."):
+                # Identity is where the row sits in the document, not the pass-local
+                # index the model happened to return.
+                key = (
+                    candidate.page,
+                    candidate.section_type,
+                    candidate.source_row_index,
+                    candidate.container_no,
+                )
+                existing_index = line_key_map.get(key)
+                if existing_index is None:
+                    line_key_map[key] = next_index
+                    candidate.line_index = next_index
+                    next_index += 1
+                    rows.append(candidate)
+                    continue
+                candidate.line_index = existing_index
+                peer = next(
+                    (
+                        r
+                        for r in rows
+                        if r.line_index == existing_index and r.field_key == candidate.field_key
+                    ),
+                    None,
+                )
+                if peer is not None and (
+                    (peer.normalized_value or peer.raw_value)
+                    == (candidate.normalized_value or candidate.raw_value)
+                ):
+                    # Same physical row read twice (text and vision): keep one fact.
+                    continue
+                if peer is not None:
+                    peer.review_status = "NEEDS_REVIEW"
+                    candidate.review_status = "NEEDS_REVIEW"
+                rows.append(candidate)
+                continue
+            rows.append(candidate)
             continue
-        current = by_key.get(row.field_key)
-        if row.raw_value is not None and row.grounding_verified and (current is None or not current.grounding_verified):
-            by_key[row.field_key] = row
-    return [by_key[k] for k in sorted(by_key)] + line_rows
+        if candidate.raw_value is None:
+            continue
+        existing = by_key.get(candidate.field_key)
+        if not existing:
+            rows.append(candidate)
+            by_key[candidate.field_key] = [candidate]
+            continue
+        same = next(
+            (r for r in existing if (r.normalized_value or r.raw_value) == (candidate.normalized_value or candidate.raw_value)),
+            None,
+        )
+        if same is not None:
+            if candidate.grounding_verified and not same.grounding_verified:
+                same.grounding_verified = True
+                same.page = candidate.page
+                same.bbox = candidate.bbox
+            if same.confidence is None:
+                same.confidence = candidate.confidence
+            continue
+        candidate.review_status = "NEEDS_REVIEW"
+        for other in existing:
+            other.review_status = "NEEDS_REVIEW"
+        rows.append(candidate)
+        existing.append(candidate)
+    return rows
+
