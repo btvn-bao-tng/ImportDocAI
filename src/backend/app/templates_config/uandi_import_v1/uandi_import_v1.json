@@ -1,0 +1,147 @@
+{
+  "template_version": "uandi_import_v1",
+  "name": "U&I Import Template v1 (PACKING LIST / INVOICE / HOP DONG)",
+  "template_file": "uandi_import_v1.xlsx",
+  "file_code_prefix": "LS2628-WM",
+  "sheets": {
+    "PACKING LIST": {
+      "scalars": {
+        "D15": {
+          "field": "transport.volume_cbm"
+        },
+        "E15": {
+          "field": "transport.net_weight_kg"
+        },
+        "F15": {
+          "field": "transport.gross_weight_kg"
+        },
+        "A15": {
+          "field": "transport.packages",
+          "optional": true
+        }
+      },
+      "line_items": {
+        "start_row": 15,
+        "start_column": "A",
+        "columns": {
+          "B": {
+            "field": "line.description",
+            "source_field": "line.description"
+          },
+          "C": {
+            "field": "line.spec",
+            "source_field": "line.spec"
+          }
+        },
+        "skip_source_fields": [
+          "line.packages",
+          "line.description",
+          "line.spec"
+        ],
+        "leftover_policy": "warn",
+        "clear_rows": 1,
+        "end_row": 15,
+        "capacity": 1,
+        "capacity_note": "Template chỉ có 1 dòng hàng liên tiếp trước khối tổng (dòng kế tiếp là merged)."
+      }
+    },
+    "INVOICE": {
+      "scalars": {},
+      "line_items": {
+        "start_row": 16,
+        "start_column": "B",
+        "columns": {
+          "A": {
+            "field": "line.no",
+            "source_field": "line.no"
+          },
+          "B": {
+            "field": "line.description",
+            "source_field": "line.description"
+          },
+          "H": {
+            "field": "line.quantity",
+            "source_field": "line.quantity"
+          },
+          "N": {
+            "field": "line.amount",
+            "source_field": "line.amount"
+          },
+          "D": {
+            "field": "line.components",
+            "source_field": "line.components",
+            "optional": true
+          },
+          "J": {
+            "field": "line.unit_price",
+            "source_field": "line.unit_price",
+            "optional": true
+          }
+        },
+        "skip_source_fields": [
+          "line.no",
+          "line.description",
+          "line.quantity",
+          "line.amount"
+        ],
+        "leftover_policy": "warn",
+        "end_row": 16,
+        "capacity": 1,
+        "clear_rows": 2,
+        "capacity_note": "Template chỉ có 1 dòng hàng liên tiếp trước khối tổng (dòng kế tiếp là merged)."
+      }
+    },
+    "HOP DONG": {
+      "scalars": {
+        "B6": {
+          "field": "contract.seller"
+        },
+        "B8": {
+          "field": "contract.buyer"
+        }
+      },
+      "line_items": {
+        "start_row": 20,
+        "start_column": "B",
+        "columns": {
+          "A": {
+            "field": "line.no",
+            "source_field": "line.no"
+          },
+          "B": {
+            "field": "line.description",
+            "source_field": "line.description"
+          },
+          "F": {
+            "field": "line.quantity",
+            "source_field": "line.quantity"
+          },
+          "H": {
+            "field": "line.amount",
+            "source_field": "line.amount"
+          },
+          "D": {
+            "field": "line.components",
+            "source_field": "line.components",
+            "optional": true
+          }
+        },
+        "skip_source_fields": [
+          "line.no",
+          "line.description",
+          "line.quantity",
+          "line.amount"
+        ],
+        "leftover_policy": "warn",
+        "end_row": 20,
+        "capacity": 1,
+        "clear_rows": 2,
+        "capacity_note": "Template chỉ có 1 dòng hàng liên tiếp trước khối tổng (dòng kế tiếp là merged)."
+      }
+    }
+  },
+  "computed_cells": {
+    "PACKING LIST!D16": "SUM(D15:D15)",
+    "INVOICE!N18": "SUM(N16:N17)"
+  }
+}

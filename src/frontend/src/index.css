@@ -1,0 +1,318 @@
+@import "tailwindcss";
+
+@theme {
+  /* Colors — design.md tokens only */
+  --color-action: #0066cc;
+  --color-action-focus: #0071e3;
+  --color-action-dark: #2997ff;
+  --color-ink: #1d1d1f;
+  --color-ink-80: #333333;
+  --color-ink-48: #7a7a7a;
+  --color-body-on-dark: #ffffff;
+  --color-body-muted: #cccccc;
+  --color-canvas: #ffffff;
+  --color-parchment: #f5f5f7;
+  --color-pearl: #fafafc;
+  --color-hairline: #e0e0e0;
+  --color-divider: #f0f0f0;
+  --color-tile: #272729;
+  --color-tile-2: #2a2a2c;
+  --color-tile-3: #252527;
+  --color-black: #000000;
+  --color-chip: #d2d2d7;
+
+  /* Localized status guardrails — pills/alerts only, never buttons or fills */
+  --color-critical: #b3261e;
+  --color-warning: #8a6100;
+  --color-success: #166b3c;
+
+  /* Radii — no other radii allowed */
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 18px;
+
+  /* Type scale tokens */
+  --text-hero-display: 56px;
+  --text-hero-display--line-height: 1.07;
+  --text-hero-display--font-weight: 600;
+  --text-hero-display--letter-spacing: -0.28px;
+  --text-display-lg: 40px;
+  --text-display-lg--line-height: 1.1;
+  --text-display-lg--font-weight: 600;
+  --text-display-lg--letter-spacing: 0px;
+  --text-display-md: 34px;
+  --text-display-md--line-height: 1.47;
+  --text-display-md--font-weight: 600;
+  --text-display-md--letter-spacing: -0.374px;
+  --text-lead: 28px;
+  --text-lead--line-height: 1.14;
+  --text-lead--font-weight: 400;
+  --text-lead--letter-spacing: 0.196px;
+  --text-lead-airy: 24px;
+  --text-lead-airy--line-height: 1.5;
+  --text-lead-airy--font-weight: 300;
+  --text-lead-airy--letter-spacing: 0px;
+  --text-tagline: 21px;
+  --text-tagline--line-height: 1.19;
+  --text-tagline--font-weight: 600;
+  --text-tagline--letter-spacing: 0.231px;
+  --text-body-strong: 17px;
+  --text-body-strong--line-height: 1.24;
+  --text-body-strong--font-weight: 600;
+  --text-body-strong--letter-spacing: -0.374px;
+  --text-body: 17px;
+  --text-body--line-height: 1.47;
+  --text-body--font-weight: 400;
+  --text-body--letter-spacing: -0.374px;
+  --text-dense-link: 17px;
+  --text-dense-link--line-height: 2.41;
+  --text-dense-link--font-weight: 400;
+  --text-dense-link--letter-spacing: 0px;
+  --text-caption: 14px;
+  --text-caption--line-height: 1.43;
+  --text-caption--font-weight: 400;
+  --text-caption--letter-spacing: -0.224px;
+  --text-caption-strong: 14px;
+  --text-caption-strong--line-height: 1.29;
+  --text-caption-strong--font-weight: 600;
+  --text-caption-strong--letter-spacing: -0.224px;
+  --text-button-large: 18px;
+  --text-button-large--line-height: 1;
+  --text-button-large--font-weight: 300;
+  --text-fine-print: 12px;
+  --text-fine-print--line-height: 1;
+  --text-fine-print--font-weight: 400;
+  --text-fine-print--letter-spacing: -0.12px;
+  --text-micro-legal: 10px;
+  --text-micro-legal--line-height: 1.3;
+  --text-micro-legal--font-weight: 400;
+  --text-micro-legal--letter-spacing: -0.08px;
+  --text-nav-link: 12px;
+  --text-nav-link--line-height: 1;
+  --text-nav-link--font-weight: 400;
+  --text-nav-link--letter-spacing: -0.12px;
+
+  /* Elevation — exactly one shadow, product imagery only */
+  --shadow-product: 0 3px 5px 30px rgba(0, 0, 0, 0.22);
+
+  /* Fonts — SF Pro first, Inter substitute on non-Apple platforms */
+  --font-display: "SF Pro Display", "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: "SF Pro Text", "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background: var(--color-parchment);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "ss03";
+  }
+  body {
+    margin: 0;
+    color: var(--color-ink);
+    background: var(--color-parchment);
+  }
+  a {
+    color: var(--color-action);
+    text-decoration: none;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+    color: inherit;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-action-focus);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--color-action) 22%, transparent);
+  }
+}
+
+/* Type utilities — pages should use these instead of hand-rolled sizes */
+@utility type-hero-display {
+  font-family: var(--font-display);
+  font-size: 56px;
+  font-weight: 600;
+  line-height: 1.07;
+  letter-spacing: -0.28px;
+}
+@utility type-display-lg {
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+@utility type-display-md {
+  font-family: var(--font-display);
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.374px;
+}
+@utility type-lead {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  line-height: 1.14;
+  letter-spacing: 0.196px;
+}
+@utility type-lead-airy {
+  font-family: var(--font-sans);
+  font-size: 24px;
+  font-weight: 300;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+@utility type-tagline {
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.19;
+  letter-spacing: 0.231px;
+}
+@utility type-body-strong {
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.24;
+  letter-spacing: -0.374px;
+}
+@utility type-body {
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.47;
+  letter-spacing: -0.374px;
+}
+@utility type-dense-link {
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 2.41;
+  letter-spacing: 0;
+}
+@utility type-caption {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.43;
+  letter-spacing: -0.224px;
+}
+@utility type-caption-strong {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.29;
+  letter-spacing: -0.224px;
+}
+@utility type-button-large {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: 0;
+}
+@utility type-fine-print {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.34;
+  letter-spacing: -0.12px;
+}
+@utility type-micro-legal {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.3;
+  letter-spacing: -0.08px;
+}
+@utility type-nav-link {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.12px;
+}
+
+/* Inter substitute nudges — only where SF Pro is absent */
+@supports (font-variation-settings: normal) {
+  @font-face {
+    font-family: "SF Pro Display";
+    font-weight: 100 900;
+    src: local("SF Pro Display"), local(".SF NS Display"), local("-apple-system");
+  }
+  @font-face {
+    font-family: "SF Pro Text";
+    font-weight: 100 900;
+    src: local("SF Pro Text"), local(".SF NS Text"), local("-apple-system");
+  }
+}
+
+@layer utilities {
+  .font-inter-fallback .type-hero-display,
+  .font-inter-fallback .type-display-lg,
+  .font-inter-fallback .type-display-md,
+  .font-inter-fallback .type-lead,
+  .font-inter-fallback .type-tagline {
+    letter-spacing: -0.01em;
+  }
+  .font-inter-fallback .type-body,
+  .font-inter-fallback .type-body-strong {
+    line-height: 1.44;
+  }
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (max-width: 1068px) {
+  .type-hero-display {
+    font-size: 40px;
+    line-height: 1.1;
+    letter-spacing: 0;
+  }
+}
+@media (max-width: 640px) {
+  .type-hero-display {
+    font-size: 34px;
+  }
+  .type-display-lg {
+    font-size: 34px;
+  }
+  .type-display-md {
+    font-size: 28px;
+  }
+  .type-lead {
+    font-size: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

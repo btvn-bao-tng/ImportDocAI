@@ -1,0 +1,211 @@
+template_version: uandi_import_v1
+generated_from: app/templates_config/uandi_import_v1/uandi_import_v1.json
+notes: >
+  M0 contract. Every cell the export may touch has an explicit policy so the
+  exporter can never "fill for completeness". `preferred_source_type` is the
+  document family a value must come from; a value from a different family is a
+  candidate for review, never an automatic override.
+
+review_policy:
+  AUTO_FROM_SOURCE: value written from a located source; unconfirmed is allowed in DRAFT
+  REVIEW_REQUIRED: critical field; human CONFIRMED before FINAL
+  MANUAL_ONLY: never taken from AI; reviewer input required
+  FORMULA: template formula, never overwritten by the exporter
+  STATIC_LABEL: fixed template text
+
+cells:
+  PACKING LIST!A15:
+    canonical_field: transport.packages
+    preferred_source_type: [TRANSPORT_DOCUMENT, PACKING_LIST]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  PACKING LIST!D15:
+    canonical_field: transport.volume_cbm
+    preferred_source_type: [PACKING_LIST, TRANSPORT_DOCUMENT, COMMERCIAL_INVOICE]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+    note: LS2628 has 8.336,212 m2 (nominal) and 9.136,3498 m2 (actual); never merged automatically
+  PACKING LIST!E15:
+    canonical_field: transport.net_weight_kg
+    preferred_source_type: [TRANSPORT_DOCUMENT, PACKING_LIST]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+  PACKING LIST!F15:
+    canonical_field: transport.gross_weight_kg
+    preferred_source_type: [TRANSPORT_DOCUMENT, PACKING_LIST]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+  PACKING LIST!B15:
+    canonical_field: line.description
+    preferred_source_type: [PACKING_LIST, COMMERCIAL_INVOICE]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  PACKING LIST!C15:
+    canonical_field: line.spec
+    preferred_source_type: [PACKING_LIST]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  PACKING LIST!A16:
+    canonical_field: null
+    policy: FORMULA
+  PACKING LIST!D16:
+    canonical_field: null
+    policy: FORMULA
+  PACKING LIST!E16:
+    canonical_field: null
+    policy: FORMULA
+  PACKING LIST!F16:
+    canonical_field: null
+    policy: FORMULA
+
+  INVOICE!A16:
+    canonical_field: line.no
+    preferred_source_type: [SALES_CONTRACT_PO, COMMERCIAL_INVOICE]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  INVOICE!B16:
+    canonical_field: line.description
+    preferred_source_type: [COMMERCIAL_INVOICE, SALES_CONTRACT_PO]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: true
+  INVOICE!D16:
+    canonical_field: line.components
+    preferred_source_type: [COMMERCIAL_INVOICE, PACKING_LIST]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  INVOICE!H16:
+    canonical_field: line.quantity
+    preferred_source_type: [COMMERCIAL_INVOICE, PACKING_LIST]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+  INVOICE!J16:
+    canonical_field: line.unit_price
+    preferred_source_type: [COMMERCIAL_INVOICE, SALES_CONTRACT_PO]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: false
+    note: template computes it with =N16/H16; written only when a source states it
+  INVOICE!N16:
+    canonical_field: line.amount
+    preferred_source_type: [COMMERCIAL_INVOICE, SALES_CONTRACT_PO]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+  INVOICE!J15:
+    canonical_field: null
+    policy: STATIC_LABEL
+  INVOICE!N18:
+    canonical_field: null
+    policy: FORMULA
+
+  HOP DONG!B6:
+    canonical_field: contract.seller
+    preferred_source_type: [SALES_CONTRACT_PO]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+    note: never substituted with a seller from another transaction (e.g. DALIAN CHUNLING vs WINSMART)
+  HOP DONG!B8:
+    canonical_field: contract.buyer
+    preferred_source_type: [SALES_CONTRACT_PO]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+  HOP DONG!A20:
+    canonical_field: line.no
+    preferred_source_type: [SALES_CONTRACT_PO, COMMERCIAL_INVOICE]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  HOP DONG!B20:
+    canonical_field: line.description
+    preferred_source_type: [SALES_CONTRACT_PO, COMMERCIAL_INVOICE]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  HOP DONG!D20:
+    canonical_field: line.components
+    preferred_source_type: [SALES_CONTRACT_PO]
+    policy: AUTO_FROM_SOURCE
+    critical: false
+    required: false
+  HOP DONG!F20:
+    canonical_field: line.quantity
+    preferred_source_type: [SALES_CONTRACT_PO, COMMERCIAL_INVOICE]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+  HOP DONG!H20:
+    canonical_field: line.amount
+    preferred_source_type: [SALES_CONTRACT_PO, COMMERCIAL_INVOICE]
+    policy: REVIEW_REQUIRED
+    critical: true
+    required: true
+  HOP DONG!F22:
+    canonical_field: null
+    policy: FORMULA
+  HOP DONG!H22:
+    canonical_field: null
+    policy: FORMULA
+
+manual_only_cells:
+  INVOICE!J8:
+    reason: sailing date is schedule data with no source document in the set
+  HOP DONG!E29:
+    reason: shipment deadline is a commercial commitment, not extracted evidence
+  HOP DONG!D26:
+    reason: country of origin statement is a commercial declaration
+
+# --- tokhai_import_v1 (Tờ khai hải quan nhập khẩu) -------------------------------
+tokhai_import_v1:
+  notes: >
+    TKN page 1 carries the declaration header; continuation pages repeat the header
+    block (page_maps) and each holds one goods block. HANG is veryHidden and mirrors
+    the goods rows. Values are printed verbatim ('23.230', '46,46') because the
+    customs layout depends on the Vietnamese formatting.
+  policy_defaults:
+    declaration.*: REVIEW_REQUIRED when critical, else AUTO_FROM_SOURCE
+    goods.*: REVIEW_REQUIRED when critical, else AUTO_FROM_SOURCE
+    tax.*: AUTO_FROM_SOURCE
+  critical:
+    - declaration.declaration_no
+    - declaration.registered_at
+    - declaration.importer_name
+    - declaration.exporter_name
+    - declaration.bill_of_lading_no
+    - declaration.invoice_no
+    - declaration.invoice_total
+    - declaration.package_count
+    - declaration.gross_weight
+    - declaration.tax_exchange_rate
+    - goods.hs_code
+    - goods.description
+    - goods.quantity_1
+    - goods.invoice_amount
+    - goods.unit_price
+    - goods.customs_value
+    - goods.origin_country_code
+  manual_only:
+    - declaration.customs_chief_name
+    - declaration.licensed_at
+    - declaration.inspection_finished_at
+    - declaration.company_internal_ref
+  capacity:
+    goods_blocks: 2
+    per_block: 1
+    total_lines: 2
+  pages:
+    page_1: header only
+    page_2: header + goods block 1
+    page_3: header + goods block 2
+    page_4: template page kept for overflow printing of additional blocks

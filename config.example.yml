@@ -1,0 +1,23 @@
+providers:
+    bioturing:
+        api: openai-completions
+        apiKey: ""
+        baseUrl: https://hy-llm.bioturing.com/v1
+        availableModels:
+            sonya:
+                reasoning: true
+                input:
+                    - text
+                contextWindow: 256000
+                maxTokens: 32000
+            vision_sonya:
+                reasoning: true
+                input:
+                    - text
+                    - image
+                contextWindow: 256000
+                maxTokens: 32000
+        defaultModel: vision_sonya
+        modelDisplayNames:
+            sonya: Sonya
+            vision_sonya: Vision Sonya

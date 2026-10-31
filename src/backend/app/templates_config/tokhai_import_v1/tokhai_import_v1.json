@@ -1,0 +1,460 @@
+{
+  "template_version": "tokhai_import_v1",
+  "name": "Tờ khai hải quan nhập khẩu (TKN / HANG)",
+  "template_file": "tokhai_import_v1.xlsx",
+  "file_code_prefix": "TOKHAI",
+  "layout": "page_blocks",
+  "sheets": {
+    "TKN": {
+      "description": "Trang 1: thông tin chung tờ khai. Trang 2..N lặp lại header + 1 khối hàng hóa mỗi trang.",
+      "scalars": {
+        "E4": {
+          "field": "declaration.declaration_no",
+          "critical": true,
+          "page_refs": [
+            "E4",
+            "E79",
+            "E142",
+            "E195"
+          ]
+        },
+        "G8": {
+          "field": "declaration.registered_at",
+          "critical": true,
+          "page_refs": [
+            "G8",
+            "G83",
+            "G146",
+            "G199"
+          ]
+        },
+        "R8": {
+          "field": "declaration.registered_changed_at",
+          "page_refs": [
+            "R8",
+            "R83",
+            "R146",
+            "R199"
+          ],
+          "critical": false
+        },
+        "P6": {
+          "field": "declaration.declaration_kind",
+          "page_refs": [
+            "P6",
+            "P81",
+            "P144",
+            "P197"
+          ],
+          "critical": false
+        },
+        "I6": {
+          "field": "declaration.check_code",
+          "page_refs": [
+            "I6",
+            "I81",
+            "I144",
+            "I197"
+          ],
+          "critical": false
+        },
+        "L7": {
+          "field": "declaration.customs_office",
+          "page_refs": [
+            "L7",
+            "L82",
+            "L145",
+            "L198"
+          ],
+          "critical": false
+        },
+        "AE6": {
+          "field": "declaration.representative_hs_code",
+          "page_refs": [
+            "AE6",
+            "AE81",
+            "AE144",
+            "AE197"
+          ],
+          "critical": false
+        },
+        "H10": {
+          "field": "declaration.importer_tax_code",
+          "critical": false
+        },
+        "H11": {
+          "field": "declaration.importer_name",
+          "critical": true
+        },
+        "H13": {
+          "field": "declaration.importer_postcode",
+          "critical": false
+        },
+        "H14": {
+          "field": "declaration.importer_address",
+          "critical": false
+        },
+        "H16": {
+          "field": "declaration.importer_phone",
+          "critical": false
+        },
+        "H23": {
+          "field": "declaration.exporter_name",
+          "critical": true
+        },
+        "H25": {
+          "field": "declaration.exporter_address",
+          "critical": false
+        },
+        "H27": {
+          "field": "declaration.exporter_country_code",
+          "critical": false
+        },
+        "G29": {
+          "field": "declaration.customs_agent",
+          "critical": false
+        },
+        "D31": {
+          "field": "declaration.bill_of_lading_no",
+          "critical": true
+        },
+        "U30": {
+          "field": "declaration.warehouse_code",
+          "critical": false
+        },
+        "Z30": {
+          "field": "declaration.warehouse_name",
+          "critical": false
+        },
+        "U31": {
+          "field": "declaration.discharge_port_code",
+          "critical": false
+        },
+        "Z31": {
+          "field": "declaration.discharge_port_name",
+          "critical": false
+        },
+        "U32": {
+          "field": "declaration.loading_port_code",
+          "critical": false
+        },
+        "Z32": {
+          "field": "declaration.loading_port_name",
+          "critical": false
+        },
+        "Z34": {
+          "field": "declaration.transport_vessel",
+          "critical": false
+        },
+        "U35": {
+          "field": "declaration.cargo_arrival_date",
+          "critical": false
+        },
+        "K36": {
+          "field": "declaration.package_count",
+          "critical": true
+        },
+        "P36": {
+          "field": "declaration.package_unit",
+          "critical": false
+        },
+        "U36": {
+          "field": "declaration.marks_and_numbers",
+          "critical": false
+        },
+        "K37": {
+          "field": "declaration.gross_weight",
+          "critical": true
+        },
+        "P37": {
+          "field": "declaration.gross_weight_unit",
+          "critical": false
+        },
+        "K38": {
+          "field": "declaration.container_count",
+          "critical": false
+        },
+        "Y40": {
+          "field": "declaration.legal_document_codes",
+          "critical": false
+        },
+        "J41": {
+          "field": "declaration.invoice_no",
+          "critical": true
+        },
+        "J43": {
+          "field": "declaration.invoice_date",
+          "critical": false
+        },
+        "J44": {
+          "field": "declaration.payment_method",
+          "critical": false
+        },
+        "J45": {
+          "field": "declaration.invoice_currency_code",
+          "critical": false
+        },
+        "P45": {
+          "field": "declaration.invoice_total",
+          "critical": true
+        },
+        "J46": {
+          "field": "declaration.total_customs_value",
+          "critical": false
+        },
+        "J47": {
+          "field": "declaration.total_allocation_factor",
+          "critical": false
+        },
+        "D64": {
+          "field": "declaration.valuation_shipper_note",
+          "critical": false
+        },
+        "X68": {
+          "field": "declaration.tax_total_payable",
+          "critical": false
+        },
+        "X70": {
+          "field": "declaration.tax_exchange_rate_currency",
+          "critical": false
+        },
+        "AB70": {
+          "field": "declaration.tax_exchange_rate",
+          "critical": true
+        },
+        "U75": {
+          "field": "declaration.page_count",
+          "critical": false
+        },
+        "AF75": {
+          "field": "declaration.goods_line_count",
+          "critical": false
+        },
+        "E50": {
+          "field": "declaration.import_license_numbers",
+          "critical": false
+        },
+        "G85": {
+          "field": "declaration.note",
+          "critical": false
+        },
+        "N121": {
+          "field": "declaration.customs_chief_name",
+          "critical": false
+        },
+        "N122": {
+          "field": "declaration.licensed_at",
+          "critical": false
+        },
+        "N123": {
+          "field": "declaration.inspection_finished_at",
+          "critical": false
+        }
+      },
+      "tax_rows": {
+        "start_row": 68,
+        "capacity": 6,
+        "columns": {
+          "D": {
+            "field": "tax.name"
+          },
+          "H": {
+            "field": "tax.amount"
+          },
+          "N": {
+            "field": "tax.line_count"
+          },
+          "X": {
+            "field": "tax.payable_total"
+          },
+          "AB": {
+            "field": "declaration.tax_exchange_rate_value"
+          },
+          "X68": {
+            "field": "declaration.tax_total_payable"
+          },
+          "AE68": {
+            "field": "tax.currency"
+          },
+          "L": {
+            "field": "tax.currency"
+          },
+          "AC87": {
+            "field": "declaration.company_internal_ref"
+          }
+        }
+      },
+      "line_blocks": {
+        "block_starts": [
+          148,
+          201
+        ],
+        "capacity_per_block": 1,
+        "capacity": 2,
+        "columns": {
+          "G149": {
+            "field": "goods.hs_code",
+            "critical": true
+          },
+          "G150": {
+            "field": "goods.description",
+            "critical": true
+          },
+          "V153": {
+            "field": "goods.quantity_1",
+            "critical": true
+          },
+          "AE153": {
+            "field": "goods.quantity_1_unit"
+          },
+          "V154": {
+            "field": "goods.quantity_2"
+          },
+          "I155": {
+            "field": "goods.invoice_amount",
+            "critical": true
+          },
+          "V155": {
+            "field": "goods.unit_price",
+            "critical": true
+          },
+          "AC155": {
+            "field": "goods.unit_price_currency"
+          },
+          "I157": {
+            "field": "goods.customs_value",
+            "critical": true
+          },
+          "V158": {
+            "field": "goods.customs_unit_price"
+          },
+          "V159": {
+            "field": "goods.import_duty_rate"
+          },
+          "X160": {
+            "field": "goods.origin_country_code",
+            "critical": true
+          },
+          "Z160": {
+            "field": "goods.origin_country_name"
+          },
+          "AC160": {
+            "field": "goods.origin_preference_code"
+          },
+          "H167": {
+            "field": "goods.tax_name"
+          },
+          "W167": {
+            "field": "goods.tax_rate_code"
+          },
+          "I168": {
+            "field": "goods.tax_base"
+          },
+          "I169": {
+            "field": "goods.tax_rate"
+          },
+          "I170": {
+            "field": "goods.tax_amount"
+          }
+        },
+        "block_seq_letter": "C",
+        "block_seq_row_offset": 0
+      },
+      "page_maps": {
+        "declaration_no": [
+          "E4",
+          "E79",
+          "E142",
+          "E195"
+        ],
+        "registered_at": [
+          "G8",
+          "G83",
+          "G146",
+          "G199"
+        ],
+        "registered_changed_at": [
+          "R8",
+          "R83",
+          "R146",
+          "R199"
+        ],
+        "declaration_kind": [
+          "P6",
+          "P81",
+          "P144",
+          "P197"
+        ],
+        "check_code": [
+          "I6",
+          "I81",
+          "I144",
+          "I197"
+        ],
+        "customs_office": [
+          "L7",
+          "L82",
+          "L145",
+          "L198"
+        ],
+        "representative_hs_code": [
+          "AE6",
+          "AE81",
+          "AE144",
+          "AE197"
+        ]
+      },
+      "page_frames": [
+        {
+          "page": 1,
+          "counter_cell": "AF1",
+          "banner_cell": "AA3"
+        },
+        {
+          "page": 2,
+          "counter_cell": "AF76"
+        },
+        {
+          "page": 3,
+          "counter_cell": "AF139"
+        },
+        {
+          "page": 4,
+          "counter_cell": "AF192"
+        }
+      ]
+    },
+    "HANG": {
+      "description": "Sheet ẩn, dòng hàng chi tiết theo cùng cấu trúc cột của TKN line block (offset -132).",
+      "sheet_state": "veryHidden",
+      "scalars": {
+        "E4": {
+          "field": "declaration.declaration_no"
+        },
+        "G8": {
+          "field": "declaration.registered_at"
+        },
+        "U6": {
+          "field": "declaration.representative_hs_code"
+        }
+      },
+      "line_blocks": {
+        "description": "HANG không có dòng dữ liệu trong cả 3 bản mẫu tham chiếu; chỉ ô G17 (dưới nhãn 'Mã số hàng hóa') là ô dữ liệu xác nhận được. Các ô còn lại là nhãn — KHÔNG ghi.",
+        "anchor_ref": "G17",
+        "row_stride": 1,
+        "verified_data_cells": true,
+        "columns": {
+          "G17": {
+            "field": "goods.hs_code"
+          }
+        }
+      }
+    }
+  },
+  "computed_cells": {},
+  "notes": [
+    "Mọi ô khai báo theo field; exporter coi các ô còn lại của template là STATIC_LABEL.",
+    "TKN line block start_row=148 là khối hàng hóa đầu tiên (trang 2); mỗi trang chiếm page_height=53 dòng.",
+    "HANG giữ sheet_state=veryHidden như bản xuất gốc; không tự unhide khi export."
+  ]
+}

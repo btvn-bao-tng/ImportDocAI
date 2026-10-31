@@ -1,0 +1,44 @@
+# runtime data
+data/storage/
+data/exports/
+
+# real customer documents / reference output / local DB — never committed
+data/sample/
+data/reports/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+exports/
+
+# local tooling
+.playwright-mcp/
+
+# secrets — never commit real credentials
+config.yml
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# node
+node_modules/
+src/frontend/dist/
+*.log
+
+# os
+.DS_Store
+.kilo
+
+# customer declaration workbooks dropped at the repo root — never committed
+/*.xlsx
+/*.xls
+/*.pdf
