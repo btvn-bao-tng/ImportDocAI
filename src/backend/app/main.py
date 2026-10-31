@@ -2,18 +2,29 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .api import documents, exports, jobs, review, shipments
 from .config import load_settings
 from .db import create_all, dispose, init_engine
-from .deps import init_state
-from .services.export_excel import available_templates, load_mapping
+from .deps import get_session, init_state
+from .models import Shipment
+from .services.constants import IngestError
+from .services.export_excel import (
+    ASSETS_DIR,
+    VERIFY_TEMPLATE_VERSION,
+    ExportError,
+    available_templates,
+    load_mapping,
+)
+from .services.export_tokhai import TOKHAI_TEMPLATE_VERSION
+from .services.ingest import parse_document
 from .services.llm import LLMClient
+from .services.template_preview import build_template_preview
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("importdoc")
@@ -63,12 +74,61 @@ def create_app(settings=None) -> FastAPI:
             mapping, template_path = load_mapping(item["version"])
             item["sheets"] = list((mapping.get("sheets") or {}).keys())
             item["file_code_prefix"] = mapping.get("file_code_prefix")
+        if all(item.get("version") != VERIFY_TEMPLATE_VERSION for item in items):
+            items.insert(
+                0,
+                {
+                    "version": VERIFY_TEMPLATE_VERSION,
+                    "name": "Bảng đối chiếu trích xuất",
+                    "sheets": ["DOI_CHIEU"],
+                    "file_code_prefix": None,
+                },
+            )
         return items
 
     @app.get("/api/v1/templates/{version}")
     async def template_detail(version: str):
         mapping, template_path = load_mapping(version)
         return {**mapping, "template_path": str(template_path.name)}
+
+    def _template_file(version: str):
+        try:
+            _, template_path = load_mapping(version)
+        except ExportError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        # The mapping is trusted config, but only serve files that live with the assets.
+        if not template_path.resolve().is_relative_to(ASSETS_DIR.resolve()):
+            raise HTTPException(404, "Mẫu này không có tệp trong thư mục assets")
+        return template_path
+
+    @app.get("/api/v1/templates/{version}/grid")
+    async def template_grid(version: str):
+        template_path = _template_file(version)
+        try:
+            parsed = parse_document(template_path)
+        except IngestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if parsed["grid"] is None:
+            raise HTTPException(400, "Mẫu này không có dạng bảng tính")
+        return parsed["grid"]
+
+    @app.get("/api/v1/templates/{version}/file")
+    async def template_file(version: str):
+        template_path = _template_file(version)
+        return FileResponse(template_path, filename=template_path.name)
+
+    @app.get("/api/v1/shipments/{shipment_id}/template-preview")
+    async def shipment_template_preview(
+        shipment_id: int,
+        version: str = TOKHAI_TEMPLATE_VERSION,
+        session: AsyncSession = Depends(get_session),
+    ):
+        if await session.get(Shipment, shipment_id) is None:
+            raise HTTPException(404, "Không tìm thấy shipment")
+        try:
+            return await build_template_preview(session, shipment_id, version)
+        except ExportError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     app.include_router(shipments.router, prefix="/api/v1")
     app.include_router(documents.router, prefix="/api/v1")
@@ -78,9 +138,10 @@ def create_app(settings=None) -> FastAPI:
 
     @app.get("/api/v1/files/{path:path}")
     async def serve_file(path: str):
-        candidate = (settings.data_dir / path).resolve()
-        if not str(candidate).startswith(str(settings.data_dir.resolve())) or not candidate.exists():
-            return FileResponse(Path("/nonexistent"))
+        data_root = settings.data_dir.resolve()
+        candidate = (data_root / path).resolve()
+        if not candidate.is_relative_to(data_root) or not candidate.is_file():
+            raise HTTPException(404, "Không tìm thấy file")
         return FileResponse(candidate)
 
     return app

@@ -8,9 +8,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
-from openpyxl.utils import column_index_from_string
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import column_index_from_string, get_column_letter
 
 from .fields import ALL_FIELD_SPECS, FieldSpec, is_critical
 
@@ -63,6 +64,107 @@ def load_mapping(template_version: str = DEFAULT_TEMPLATE_VERSION) -> tuple[dict
     if not template_path.exists():
         raise ExportError(f"Không tìm thấy file template: {template_path}")
     return mapping, template_path
+
+
+VERIFY_TEMPLATE_VERSION = "verify_sheet_v1"
+
+
+def load_verify_mapping() -> dict[str, Any]:
+    """Mapping generated on the fly: every extracted field lands in its own row.
+
+    The verify page shows the real extracted fields side by side with the source file,
+    so this sheet is a faithful, template-free projection of what was extracted — not a
+    form that customs would accept.
+    """
+    return {
+        "template_version": VERIFY_TEMPLATE_VERSION,
+        "name": "Bảng đối chiếu trích xuất",
+        "layout": "verify",
+        "sheets": {},
+    }
+
+
+def write_verify_export(
+    shipment_code: str,
+    rows: list[dict[str, Any]],
+    template_version: str = VERIFY_TEMPLATE_VERSION,
+    export_dir: Path | None = None,
+    today: date | None = None,
+) -> ExportOutcome:
+    """Write one row per extracted field so the user can check files against the final xlsx."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "DOI_CHIEU"
+    headers = ["STT", "Chứng từ", "Loại", "Trường", "Tên trường", "Giá trị", "Đơn vị", "Trang/ô", "Trạng thái", "Nguồn"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="EAF2FD")
+    widths = [6, 28, 18, 34, 30, 34, 10, 14, 16, 22]
+    for index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(index)].width = width
+
+    filled = 0
+    missing: list[str] = []
+    for seq, row in enumerate(rows, start=1):
+        location = ""
+        if row.get("page"):
+            location = f"trang {row['page']}"
+        if row.get("cell_ref"):
+            location = row["cell_ref"]
+        status = "Đã xác nhận" if row.get("review_status") == "CONFIRMED" else (
+            "Cần xem lại" if row.get("critical") else "Chưa xem"
+        )
+        ws.append(
+            [
+                seq,
+                row.get("filename"),
+                row.get("doc_type"),
+                row.get("field_key"),
+                row.get("label_vi"),
+                row.get("value"),
+                row.get("unit"),
+                location,
+                status,
+                row.get("provenance"),
+            ]
+        )
+        if row.get("value") in (None, ""):
+            missing.append(row.get("field_key"))
+        else:
+            filled += 1
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:J{max(1, len(rows) + 1)}"
+
+    file_code = shipment_code or "EXPORT"
+    date_tag = (today or date.today()).strftime("%Y%m%d")
+    out_dir = export_dir or (Path("data/exports") / shipment_code)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%H%M%S")
+    base_name = f"{file_code}_{template_version}_FINAL_{date_tag}_{stamp}"
+    out_path = out_dir / f"{base_name}.xlsx"
+    seq = 2
+    while out_path.exists():
+        out_path = out_dir / f"{base_name}_{seq}.xlsx"
+        seq += 1
+    wb.save(out_path)
+
+    warnings: list[str] = []
+    if missing:
+        warnings.append(f"{len(missing)} trường chưa có giá trị")
+    report_path = out_dir / f"{out_path.stem}_report.json"
+    report_path.write_text(
+        json.dumps({"shipment": shipment_code, "filled": filled, "missing": missing}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return ExportOutcome(
+        output_path=out_path,
+        report_path=report_path,
+        mode="FINAL",
+        filled=filled,
+        missing=missing,
+        warnings=warnings,
+    )
 
 
 def available_templates() -> list[dict[str, Any]]:
@@ -194,7 +296,7 @@ def write_export(
     out_dir = export_dir or (Path("data/exports") / shipment_code)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%H%M%S")
-    base_name = f"{file_code}_{shipment_code}_{template_version}_{mode}_{date_tag}_{stamp}"
+    base_name = f"{file_code}_{template_version}_{mode}_{date_tag}_{stamp}"
     out_path = out_dir / f"{base_name}.xlsx"
     seq = 2
     while out_path.exists():

@@ -169,14 +169,20 @@ manual_only_cells:
 # --- tokhai_import_v1 (Tờ khai hải quan nhập khẩu) -------------------------------
 tokhai_import_v1:
   notes: >
-    TKN page 1 carries the declaration header; continuation pages repeat the header
-    block (page_maps) and each holds one goods block. HANG is veryHidden and mirrors
-    the goods rows. Values are printed verbatim ('23.230', '46,46') because the
-    customs layout depends on the Vietnamese formatting.
+    TKN page 1 carries the declaration header; page 2 is the fixed continuation
+    sheet (ghi chú / chỉ thị hải quan / trưởng đơn vị); pages 3..N each hold one
+    goods block (page_maps repeat the header on every page). HANG is veryHidden
+    and mirrors the goods rows. Values are printed verbatim ('23.230', '46,46')
+    because the customs layout depends on the Vietnamese formatting. Reference
+    file: repo-root ToKhaiHQ7N_QDTQ_108299395961 THONG QUAN.xlsx (4 pages, 2 goods).
   policy_defaults:
     declaration.*: REVIEW_REQUIRED when critical, else AUTO_FROM_SOURCE
     goods.*: REVIEW_REQUIRED when critical, else AUTO_FROM_SOURCE
+    goods_tax.*: AUTO_FROM_SOURCE
     tax.*: AUTO_FROM_SOURCE
+    license.*: AUTO_FROM_SOURCE
+    instruction.*: AUTO_FROM_SOURCE
+    adjustment.*: AUTO_FROM_SOURCE
   critical:
     - declaration.declaration_no
     - declaration.registered_at
@@ -200,12 +206,105 @@ tokhai_import_v1:
     - declaration.licensed_at
     - declaration.inspection_finished_at
     - declaration.company_internal_ref
+  scalar_cells:
+    declaration_no: E4 (page_refs E79/E142/E195)
+    first_declaration_no: R4
+    corresponding_declaration_no: L5
+    registered_at: G8
+    registered_changed_at: R8
+    declaration_kind: P6
+    check_code: I6
+    customs_office: L7
+    processing_department_code: AE7 (page_refs AE82/AE145/AE198)
+    representative_hs_code: AE6
+    reexport_deadline: AE8
+    importer_tax_code: H10
+    importer_name: H11
+    importer_postcode: H13
+    importer_address: H14
+    importer_phone: H16
+    entrusted_importer_tax_code: H18
+    entrusted_importer_name: H19
+    exporter_tax_code: H22
+    exporter_name: H23
+    exporter_postcode: H24
+    exporter_address: H25
+    exporter_country_code: H27
+    entrusted_exporter_name: I28
+    customs_agent: G29
+    customs_officer_code: AF29
+    bill_of_lading_no: D31
+    warehouse_code: U30
+    warehouse_name: Z30
+    discharge_port_code: U31
+    discharge_port_name: Z31
+    loading_port_code: U32
+    loading_port_name: Z32
+    transport_vessel: Z34
+    cargo_arrival_date: U35
+    first_warehouse_entry_date: Y39
+    package_count: K36
+    package_unit: P36
+    marks_and_numbers: U36
+    gross_weight: K37
+    gross_weight_unit: P37
+    container_count: K38
+    legal_document_codes: Y40
+    invoice_no: J41
+    e_invoice_receipt_no: J42
+    invoice_date: J43
+    payment_method: J44
+    invoice_terms: J45
+    invoice_total: P45
+    total_customs_value: J46
+    total_allocation_factor: J47
+    content_check_result_code: J48
+    valuation_shipper_note: D64
+    tax_total_payable: X68
+    tax_guarantee_amount: X69
+    tax_exchange_rate_currency: X70
+    tax_exchange_rate: AB70
+    tax_deadline_code: X73
+    audit_request_reason_code: X74
+    taxpayer_code: AF73
+    tax_payment_classification: AF74
+    user_ref_number: AC87
+    company_internal_ref: K87
+    customs_directive_code: I88
+    note: G85
+    customs_chief_name: N121
+    licensed_at: N122
+    inspection_finished_at: N123
+    post_clearance_classification: N124
+    expected_days_to_license: N127
+    late_tax_total: D129
+  tax_rows: D68:H73 (D=name, H=amount, L=currency, N=line_count; 6 rows)
+  license_slots: '[D50|F50], [P50|R50], [AA50|AC50], [D51|F51], [P51|R51]; E50 owned chrome'
+  adjustment_rows: D58:U62 (D=code_name, G=classification_code, N=value, U=allocation_factor)
+  instruction_rows: D90..R117 (D=date, I=name, R=content; stride 3, 10 rows)
+  goods_cells_note: >
+    Goods block columns authored at block 1 (row 148) and translated per block:
+    G149 hs_code, Q149 private_management_code, G150 description, J154 adjustment_item_no,
+    V153/AE153 quantity_1(+unit), V154/AE154 quantity_2(+unit), I155 invoice_amount,
+    V155/AC155 unit_price(+currency), I157 customs_value, W157 customs_value_foreign,
+    V158 customs_unit_price, I158 tax_quantity, H159/I159 import_duty_rate_code/rate,
+    X159 absolute_tax_code, X160/Z160/AC160 origin, I161 duty_exemption_amount,
+    K163 duty_exemption_list, E165 duty_exemption_note.
+  goods_tax_slots: >
+    Per goods block, slot starts 167/172/177/182/187 (+53 per block): H name, W rate_code,
+    I(+1) base, W(+1) quantity, I(+2) rate, I(+3) amount, I(+3)+1 exemption_amount,
+    S(+3) exemption_note.
   capacity:
     goods_blocks: 2
     per_block: 1
     total_lines: 2
+    licenses: 5
+    adjustments: 5
+    instructions: 10
+    goods_tax_slots_per_block: 5
   pages:
-    page_1: header only
-    page_2: header + goods block 1
-    page_3: header + goods block 2
-    page_4: template page kept for overflow printing of additional blocks
+    page_1: header
+    page_2: fixed continuation (note, instructions, chief block)
+    page_3: header + goods block 1
+    page_4: header + goods block 2
+    formula: 2 fixed pages + one page per used goods block

@@ -42,3 +42,6 @@ src/frontend/dist/
 /*.xlsx
 /*.xls
 /*.pdf
+
+# e2e stub backend
+src/backend/e2e/__pycache__/

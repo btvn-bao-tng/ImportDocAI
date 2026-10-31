@@ -31,6 +31,68 @@ export interface ShipmentDetail extends ShipmentSummary {
   documents: DocumentSummary[];
 }
 
+export type ProcessingStage =
+  | "PARSING"
+  | "CLASSIFYING"
+  | "EXTRACTING"
+  | "PERSISTING"
+  | "FINALIZING"
+  | null;
+
+export interface JobProgress {
+  document_total: number;
+  document_done: number;
+  current_document_id: number | null;
+  current_stage: ProcessingStage;
+  stages: string[];
+  final_stage: string;
+}
+
+export interface JobStatus {
+  id: number;
+  status: string;
+  error: string | null;
+  attempts: number;
+  progress: JobProgress;
+}
+
+export interface ShipmentProgress {
+  shipment_status: ShipmentStatus;
+  job: JobStatus | null;
+}
+
+export interface VerifyRow {
+  field_key: string;
+  label_vi: string;
+  value: string | null;
+  unit: string | null;
+  page: number | null;
+  cell_ref: string | null;
+  bbox: number[] | null;
+  provenance_type: string;
+  review_status: string;
+  critical: boolean;
+}
+
+export interface VerifyDocument {
+  id: number;
+  filename: string;
+  doc_type: string | null;
+  status: string;
+  error: string | null;
+  page_count: number;
+  has_text_layer: boolean;
+  fields: VerifyRow[];
+}
+
+export interface VerifyPreviewResponse {
+  shipment: { id: number; code: string; status: ShipmentStatus };
+  documents: VerifyDocument[];
+  field_count: number;
+  critical_open: number;
+  rows: (VerifyRow & { filename: string; doc_type: string | null; provenance: string })[];
+}
+
 export interface FieldRow {
   id: number;
   document_id: number;
@@ -80,6 +142,42 @@ export interface PartyRow {
   canonical_name: string | null;
   roles: string[];
   documents: { document_id: number; filename: string | null; role: string }[];
+}
+
+export interface GridSheet {
+  name: string;
+  rows: unknown[][];
+  merges?: string[];
+}
+
+export interface GridResponse {
+  sheets: GridSheet[];
+}
+
+export interface TemplateEvidence {
+  document_id: number;
+  filename: string;
+  page: number | null;
+  bbox: number[] | null;
+  cell_ref: string | null;
+  provenance_type: "TEXT_LAYER" | "IMAGE" | "CELL";
+  review_status: string;
+  critical: boolean;
+  label_vi: string;
+}
+
+export interface TemplateCell {
+  field: string;
+  value: string;
+  evidence: TemplateEvidence | null;
+}
+
+export interface TemplatePreviewResponse {
+  version: string;
+  name: string;
+  has_data: boolean;
+  sheets: GridSheet[];
+  cells: Record<string, Record<string, TemplateCell>>;
 }
 
 export interface ExportSummary {

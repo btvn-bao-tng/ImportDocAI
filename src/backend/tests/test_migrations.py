@@ -35,7 +35,7 @@ async def test_create_all_adds_missing_columns_to_existing_tables(tmp_path):
     con.close()
     assert "review_status" in decl_cols
     assert "review_status" in goods_cols
-    assert "source_located" in goods_cols
+    assert "private_management_code" in goods_cols
 
 
 async def test_create_all_is_idempotent(tmp_path):
@@ -47,4 +47,13 @@ async def test_create_all_is_idempotent(tmp_path):
     con = sqlite3.connect(db)
     tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     con.close()
-    assert {"declarations", "goods_lines", "declaration_tax_lines", "jobs"} <= tables
+    assert {
+        "declarations",
+        "goods_lines",
+        "goods_tax_lines",
+        "declaration_licenses",
+        "declaration_instructions",
+        "declaration_adjustments",
+        "declaration_tax_lines",
+        "jobs",
+    } <= tables

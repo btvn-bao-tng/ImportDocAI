@@ -1,0 +1,78 @@
+name: importdoc-ai
+
+# Backend + worker share one image; the frontend bundles nginx and proxies /api to `backend`.
+# State that must survive recreating containers lives in the `app-data` volume (/app/data):
+# SQLite database, uploaded documents and generated exports.
+#
+# `config.yml` and `.env` are optional: variables come from either one, with environment
+# (this file / .env) taking precedence over the YAML.
+
+x-backend: &backend
+  build:
+    context: ..
+    dockerfile: docker/backend.Dockerfile
+  image: importdoc-ai-backend:latest
+  env_file:
+    - path: ../.env
+      required: false
+  environment:
+    IMPORTDOC_CONFIG: /app/config.yml
+    DATA_DIR: /app/data/storage
+    DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
+    BIOTURING_API_KEY: ${BIOTURING_API_KEY:-}
+    BIOTURING_BASE_URL: ${BIOTURING_BASE_URL:-https://hy-llm.bioturing.com/v1}
+    BIOTURING_TEXT_MODEL: ${BIOTURING_TEXT_MODEL:-sonya}
+    BIOTURING_VISION_MODEL: ${BIOTURING_VISION_MODEL:-vision_sonya}
+    MAX_TOKENS: ${MAX_TOKENS:-32000}
+  volumes:
+    - app-data:/app/data
+    # Optional local YAML config (see config.example.yml). Comment out if it does not exist.
+    - ../config.yml:/app/config.yml:ro
+  restart: unless-stopped
+  init: true
+
+services:
+  # HTTP API. Only enqueues jobs; extraction runs in `worker`.
+  backend:
+    <<: *backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Durable job runner: claims queued Processing jobs and writes extraction results.
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  # Static SPA build served by nginx, which also proxies /api/ to `backend`.
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+    image: importdoc-ai-frontend:latest
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${IMPORTDOC_HTTP_PORT:-8080}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  app-data:

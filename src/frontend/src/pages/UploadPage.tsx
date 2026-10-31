@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { DocumentSummary } from "../api/types";
 import {
   Button,
+  ButtonLink,
   Callout,
   Container,
   EmptyState,
@@ -95,7 +96,7 @@ function DocumentRow({ shipmentId, doc }: { shipmentId: number; doc: DocumentSum
   const selectValue = doc.doc_type && DOC_TYPES.some((t) => t.value === doc.doc_type) ? doc.doc_type : "";
 
   return (
-    <li className="px-6 py-6">
+    <div className="px-6 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <p className="type-body-strong truncate text-ink">{doc.filename}</p>
@@ -162,7 +163,7 @@ function DocumentRow({ shipmentId, doc }: { shipmentId: number; doc: DocumentSum
           </Callout>
         </div>
       )}
-    </li>
+    </div>
   );
 }
 
@@ -175,9 +176,6 @@ export default function UploadPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadResults, setUploadResults] = useState<UploadResult[]>([]);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<number | null>(null);
-  const [jobStatus, setJobStatus] = useState<string | null>(null);
-  const [jobError, setJobError] = useState<string | null>(null);
 
   const shipmentQuery = useQuery({
     queryKey: ["shipment", shipmentId],
@@ -195,53 +193,12 @@ export default function UploadPage() {
 
   const processMutation = useMutation({
     mutationFn: () => api.process(shipmentId),
-    onSuccess: (response) => {
-      setJobError(null);
-      setJobStatus(response.status);
-      setJobId(response.job_id);
+    onSuccess: () => {
+      // The progress page owns the run: it polls the job, shows each stage and
+      // hands off to the review page when the extraction is done.
+      navigate(`/shipments/${shipmentId}/processing`);
     },
   });
-
-  useEffect(() => {
-    if (jobId === null) return;
-    let cancelled = false;
-
-    const poll = async () => {
-      try {
-        const job = await api.getJob(jobId);
-        if (cancelled) return;
-        setJobStatus(job.status);
-        if (job.status === "FAILED") {
-          setJobError(job.error || "Xử lý chứng từ thất bại.");
-          setJobId(null);
-          return;
-        }
-        if (job.status === "DONE") {
-          setJobId(null);
-          await Promise.all([
-            queryClient.invalidateQueries({ queryKey: ["shipment", shipmentId] }),
-            queryClient.invalidateQueries({ queryKey: ["extractions", shipmentId] }),
-          ]);
-          if (!cancelled) navigate(`/shipments/${shipmentId}/review`);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setJobError(error instanceof Error ? error.message : "Không kiểm tra được trạng thái xử lý.");
-          setJobId(null);
-        }
-      }
-    };
-
-    void poll();
-    const timer = setInterval(() => {
-      void poll();
-    }, 2000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [jobId, shipmentId, navigate, queryClient]);
 
   function handleFiles(fileList: FileList | File[] | null) {
     if (!fileList) return;
@@ -269,7 +226,8 @@ export default function UploadPage() {
   }
 
   const shipment = shipmentQuery.data;
-  const isProcessing = processMutation.isPending || jobId !== null;
+  const isProcessing = processMutation.isPending;
+  const hasProcessed = shipment?.documents.some((doc) => doc.status === "EXTRACTED") ?? false;
 
   if (shipmentQuery.isPending) {
     return (
@@ -364,30 +322,26 @@ export default function UploadPage() {
             <h2 className="type-tagline text-ink">Chứng từ của lô hàng</h2>
             <p className="type-caption mt-1 text-ink-48">{shipment.documents.length} chứng từ</p>
           </div>
-          <Button
-            variant="primary"
-            onClick={() => processMutation.mutate()}
-            disabled={isProcessing || shipment.documents.length === 0}
-          >
-            {isProcessing ? "Đang xử lý…" : "Xử lý chứng từ"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            {hasProcessed ? (
+              <ButtonLink to={`/shipments/${shipmentId}/review`} variant="secondary">
+                Xem lại kết quả
+              </ButtonLink>
+            ) : null}
+            <Button
+              variant="primary"
+              onClick={() => processMutation.mutate()}
+              disabled={isProcessing || shipment.documents.length === 0}
+            >
+              {isProcessing ? "Đang bắt đầu…" : hasProcessed ? "Xử lý lại" : "Xử lý chứng từ"}
+            </Button>
+          </div>
         </div>
 
-        {isProcessing && (
-          <div className="mb-4">
-            <Callout tone="info">
-              <span className="inline-flex items-center gap-2">
-                <Spinner label="" />
-                {jobStatus ? `Trạng thái xử lý: ${jobStatus}` : "Đang gửi yêu cầu xử lý…"}
-              </span>
-            </Callout>
-          </div>
-        )}
-
-        {(jobError || processMutation.isError) && (
+        {processMutation.isError && (
           <div className="mb-4">
             <Callout tone="critical" title="Không xử lý được chứng từ">
-              {jobError ?? processMutation.error?.message}
+              {processMutation.error.message}
             </Callout>
           </div>
         )}

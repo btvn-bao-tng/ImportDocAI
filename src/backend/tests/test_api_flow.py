@@ -249,3 +249,76 @@ async def test_tokhai_export_requires_declaration_data(client: AsyncClient):
     )
     assert res.status_code == 422
     assert "tờ khai" in res.json()["detail"].lower()
+
+
+async def test_progress_endpoint_reports_stage_plan(client: AsyncClient):
+    sample = Path(__file__).resolve().parents[3] / "data" / "sample" / "input" / "bill.pdf"
+
+    res = await client.post("/api/v1/shipments", json={"code": "PROG1"})
+    shipment_id = res.json()["id"]
+    empty = (await client.get(f"/api/v1/shipments/{shipment_id}/progress")).json()
+    assert empty["job"] is None
+
+    with open(sample, "rb") as fh:
+        files = [("files", ("bill.pdf", fh.read(), "application/pdf"))]
+    await client.post(f"/api/v1/shipments/{shipment_id}/documents", files=files)
+    await client.post(f"/api/v1/shipments/{shipment_id}/process", json={})
+
+    queued = (await client.get(f"/api/v1/shipments/{shipment_id}/progress")).json()
+    assert queued["job"]["status"] == "PENDING"
+    assert queued["job"]["progress"]["document_total"] == 1
+    assert queued["job"]["progress"]["document_done"] == 0
+    assert queued["job"]["progress"]["stages"] == ["PARSING", "CLASSIFYING", "EXTRACTING", "PERSISTING"]
+    assert queued["job"]["progress"]["final_stage"] == "FINALIZING"
+
+    await run_pending_jobs()
+
+    done = (await client.get(f"/api/v1/shipments/{shipment_id}/progress")).json()
+    assert done["job"]["status"] == "DONE"
+    assert done["job"]["progress"]["document_done"] == 1
+    assert done["job"]["progress"]["current_stage"] == "FINALIZING"
+
+
+async def test_verify_preview_and_export_builds_final_xlsx(client: AsyncClient):
+    import json as jsonlib
+
+    sample = Path(__file__).resolve().parents[3] / "data" / "sample" / "input" / "bill.pdf"
+
+    res = await client.post("/api/v1/shipments", json={"code": "VERIFY1"})
+    shipment_id = res.json()["id"]
+    with open(sample, "rb") as fh:
+        files = [("files", ("bill.pdf", fh.read(), "application/pdf"))]
+    await client.post(f"/api/v1/shipments/{shipment_id}/documents", files=files)
+    await client.post(f"/api/v1/shipments/{shipment_id}/process", json={})
+    await run_pending_jobs()
+
+    preview = (await client.get(f"/api/v1/shipments/{shipment_id}/verify-preview")).json()
+    assert preview["field_count"] > 0
+    assert preview["documents"][0]["filename"] == "bill.pdf"
+    assert preview["documents"][0]["fields"][0]["label_vi"]
+    assert {row["filename"] for row in preview["rows"]} == {"bill.pdf"}
+
+    res = await client.post(
+        f"/api/v1/shipments/{shipment_id}/exports", json={"template_version": "verify_sheet_v1"}
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["mode"] == "FINAL"
+    assert body["filename"].endswith(".xlsx")
+    assert body["filled"] > 0
+
+    download = await client.get(f"/api/v1/exports/{body['id']}/download")
+    assert download.content[:2] == b"PK"
+
+    report = jsonlib.loads((await client.get(f"/api/v1/exports/{body['id']}/report")).content)
+    assert report["filled"] == body["filled"]
+
+    # a verify run is not a customs export: the shipment stays in review, not EXPORTED
+    shipment = (await client.get(f"/api/v1/shipments/{shipment_id}")).json()
+    assert shipment["status"] != "EXPORTED"
+
+
+async def test_templates_list_offers_the_verify_sheet(client: AsyncClient):
+    items = (await client.get("/api/v1/templates")).json()
+    verify = next(item for item in items if item["version"] == "verify_sheet_v1")
+    assert verify["sheets"] == ["DOI_CHIEU"]

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..audit import record_audit
-from ..models import ExtractedField, Job, LineItem, Party, Document, DocumentParty, Shipment, Transaction
+from ..models import ExtractedField, Job, LineItem, Party, Document, DocumentParty, Shipment
 from .constants import IngestError
 from .duplicates import detect_duplicates
 from .extract import ExtractionService
@@ -16,7 +17,27 @@ from .llm import LLMClient, LLMError
 
 log = logging.getLogger("importdoc.pipeline")
 
-async def process_document(session: AsyncSession, llm: LLMClient, document_id: int, force: bool = False) -> None:
+# Field families that never own a review-store LineItem: their rows are either
+# declaration-level child tables (license/instruction/adjustment) or attach to the
+# goods line (goods_tax uses the compound line_index below).
+NO_LINE_ITEM_PREFIXES = ("goods_tax.", "license.", "instruction.", "adjustment.")
+
+# goods_tax.* rows encode their position as goods_seq * 100 + tax_slot so one flat
+# line_index column can address "tax slot k of goods line n". Decoded identically in
+# _persist_declaration and _persist; extract._extract_declaration builds it.
+GOODS_TAX_ENCODING = 100
+
+async def process_document(
+    session: AsyncSession,
+    llm: LLMClient,
+    document_id: int,
+    force: bool = False,
+    on_stage: Callable[[int, str], Awaitable[None]] | None = None,
+) -> None:
+    async def stage(name: str) -> None:
+        if on_stage is not None:
+            await on_stage(document_id, name)
+
     service = ExtractionService(llm)
     doc = await session.get(Document, document_id)
     if doc is None:
@@ -31,6 +52,7 @@ async def process_document(session: AsyncSession, llm: LLMClient, document_id: i
     await session.commit()
 
     try:
+        await stage("PARSING")
         parsed = parse_document(path)
         doc.page_count = parsed["page_count"]
         doc.has_text_layer = bool(parsed["has_text_layer"])
@@ -40,6 +62,7 @@ async def process_document(session: AsyncSession, llm: LLMClient, document_id: i
             doc.doc_type_source == "AI" and doc.doc_type in {None, "", "OTHER"}
         )
         if needs_classification:
+            await stage("CLASSIFYING")
             classification = await service.classify(
                 doc.filename, path, doc.has_text_layer, parsed["pages"], parsed["grid"]
             )
@@ -49,10 +72,12 @@ async def process_document(session: AsyncSession, llm: LLMClient, document_id: i
         else:
             doc.doc_type = normalize_doc_type(doc.doc_type)
 
+        await stage("EXTRACTING")
         rows = await service.extract(
             doc.doc_type, doc.filename, path, parsed["pages"], parsed["grid"]
         )
 
+        await stage("PERSISTING")
         await _clear_extraction(session, doc)
         await _persist(session, doc, rows)
         await _persist_declaration(session, doc, rows)
@@ -100,15 +125,29 @@ async def _persist_declaration(session: AsyncSession, doc: Document, rows) -> No
     header: dict[str, str | None] = {}
     goods: dict[int, dict[str, str | None]] = {}
     taxes: dict[int, dict[str, str | None]] = {}
+    goods_taxes: dict[int, dict[int, dict[str, str | None]]] = {}
+    licenses: dict[int, dict[str, str | None]] = {}
+    instructions: dict[int, dict[str, str | None]] = {}
+    adjustments: dict[int, dict[str, str | None]] = {}
     for row in rows:
         key = row.field_key
         if key.startswith("declaration."):
             header[key] = row.normalized_value
+        elif key.startswith("goods_tax."):
+            goods_seq = (row.line_index or 0) // GOODS_TAX_ENCODING
+            slot = (row.line_index or 0) % GOODS_TAX_ENCODING
+            goods_taxes.setdefault(goods_seq, {}).setdefault(slot, {})[key] = row.normalized_value
         elif key.startswith("goods."):
             goods.setdefault(row.line_index or 1, {})[key] = row.normalized_value
         elif key.startswith("tax."):
             taxes.setdefault(row.line_index or 1, {})[key] = row.normalized_value
-    if not (header or goods or taxes):
+        elif key.startswith("license."):
+            licenses.setdefault(row.line_index or 1, {})[key] = row.normalized_value
+        elif key.startswith("instruction."):
+            instructions.setdefault(row.line_index or 1, {})[key] = row.normalized_value
+        elif key.startswith("adjustment."):
+            adjustments.setdefault(row.line_index or 1, {})[key] = row.normalized_value
+    if not (header or goods or taxes or goods_taxes or licenses or instructions or adjustments):
         return
     await upsert_declaration(
         session,
@@ -116,6 +155,10 @@ async def _persist_declaration(session: AsyncSession, doc: Document, rows) -> No
         header=header,
         goods=[goods[k] for k in sorted(goods)],
         taxes=[taxes[k] for k in sorted(taxes)],
+        goods_taxes={seq: [slots[k] for k in sorted(slots)] for seq, slots in goods_taxes.items()},
+        licenses=[licenses[k] for k in sorted(licenses)],
+        instructions=[instructions[k] for k in sorted(instructions)],
+        adjustments=[adjustments[k] for k in sorted(adjustments)],
         document_id=doc.id,
     )
 
@@ -136,20 +179,31 @@ async def _clear_extraction(session: AsyncSession, doc: Document) -> None:
 async def _persist(session: AsyncSession, doc: Document, rows) -> None:
     line_ids: dict[int, LineItem] = {}
     for row in rows:
-        if row.line_index is not None and row.line_index not in line_ids and row.field_key == "line.description":
+        if row.line_index is None or row.field_key.startswith(NO_LINE_ITEM_PREFIXES):
+            continue
+        if row.line_index not in line_ids and row.field_key == "line.description":
             item = LineItem(document_id=doc.id, seq=row.line_index, raw_description=row.raw_value, description=row.normalized_value)
             session.add(item)
             line_ids[row.line_index] = item
     for row in rows:
-        if row.line_index is not None and row.line_index not in line_ids:
+        if row.line_index is None or row.field_key.startswith(NO_LINE_ITEM_PREFIXES):
+            continue
+        if row.line_index not in line_ids:
             item = LineItem(document_id=doc.id, seq=row.line_index)
             session.add(item)
             line_ids[row.line_index] = item
     await session.flush()
 
     for row in rows:
-        item = line_ids.get(row.line_index) if row.line_index is not None else None
-        if item is not None:
+        item = None
+        if row.line_index is not None:
+            if row.field_key.startswith("goods_tax."):
+                item = line_ids.get(row.line_index // GOODS_TAX_ENCODING)
+            elif not row.field_key.startswith(NO_LINE_ITEM_PREFIXES):
+                item = line_ids.get(row.line_index)
+        if item is not None and row.field_key.split(".", 1)[0] in {"line", "goods"}:
+            # Only the review-store families mirror onto LineItem columns; tax families
+            # (tax.*, goods_tax.*) must never clobber quantity/amount of the goods line.
             attr = row.field_key.split(".", 1)[1]
             if attr == "no":
                 item.seq = int(row.normalized_value) if (row.normalized_value or "").isdigit() else item.seq
@@ -186,12 +240,6 @@ async def _persist(session: AsyncSession, doc: Document, rows) -> None:
             )
         )
     await session.flush()
-
-    # parties + transactions derived from extracted parties
-    parties = []
-    for row in rows:
-        pass
-    return
 
 
 def _dec(value: str | None):

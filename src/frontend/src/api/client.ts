@@ -3,9 +3,14 @@ import type {
   ExportSummary,
   ExtractionsResponse,
   FieldRow,
+  GridResponse,
+  JobStatus,
   PartyRow,
   ShipmentDetail,
+  ShipmentProgress,
   ShipmentSummary,
+  TemplatePreviewResponse,
+  VerifyPreviewResponse,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -51,14 +56,16 @@ export const api = {
       { method: "POST", body: form },
     );
   },
-  process: (shipmentId: number, documentIds?: number[]) =>
+  process: (shipmentId: number, documentIds?: number[], force = false) =>
     request<{ job_id: number; status: string; reused?: boolean }>(`/shipments/${shipmentId}/process`, {
       method: "POST",
-      body: JSON.stringify(documentIds ? { document_ids: documentIds } : {}),
+      body: JSON.stringify({ ...(documentIds ? { document_ids: documentIds } : {}), force }),
     }),
-  getJob: (id: number) =>
-    request<{ id: number; status: string; error: string | null; attempts: number }>(`/jobs/${id}`),
+  getJob: (id: number) => request<JobStatus>(`/jobs/${id}`),
+  getProgress: (shipmentId: number) => request<ShipmentProgress>(`/shipments/${shipmentId}/progress`),
   getExtractions: (shipmentId: number) => request<ExtractionsResponse>(`/shipments/${shipmentId}/extractions`),
+  verifyPreview: (shipmentId: number) =>
+    request<VerifyPreviewResponse>(`/shipments/${shipmentId}/verify-preview`),
   getParties: (shipmentId: number) => request<PartyRow[]>(`/shipments/${shipmentId}/parties`),
   patchField: (shipmentId: number, fieldId: number, value: string, reason?: string) =>
     request<FieldRow>(`/shipments/${shipmentId}/fields/${fieldId}`, {
@@ -81,8 +88,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ keep_this: keepThis, note }),
     }),
-  documentGrid: (documentId: number) =>
-    request<{ sheets: { name: string; rows: unknown[][] }[] }>(`/documents/${documentId}/grid`),
+  documentGrid: (documentId: number) => request<GridResponse>(`/documents/${documentId}/grid`),
   documentFileUrl: (documentId: number) => `${BASE}/documents/${documentId}/file`,
   listExports: (shipmentId: number) => request<ExportSummary[]>(`/shipments/${shipmentId}/exports`),
   createExport: (shipmentId: number, templateVersion = "uandi_import_v1") =>
@@ -94,6 +100,12 @@ export const api = {
   exportReportUrl: (exportId: number) => `${BASE}/exports/${exportId}/report`,
   listTemplates: () =>
     request<{ version: string; name: string; sheets: string[]; file_code_prefix: string }[]>("/templates"),
+  templateGrid: (version: string) => request<GridResponse>(`/templates/${version}/grid`),
+  templateFileUrl: (version: string) => `${BASE}/templates/${version}/file`,
+  templatePreview: (shipmentId: number, version: string) =>
+    request<TemplatePreviewResponse>(
+      `/shipments/${shipmentId}/template-preview?version=${encodeURIComponent(version)}`,
+    ),
 };
 
 export type { DocumentSummary };

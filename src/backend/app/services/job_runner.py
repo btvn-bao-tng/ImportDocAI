@@ -1,16 +1,35 @@
 from __future__ import annotations
 
 import logging
+from typing import Awaitable, Callable
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..audit import record_audit
+from ..db import session_scope
 from ..models import Document, ExtractedField, Job, Shipment
 from .llm import LLMClient
 from . import pipeline
 
 log = logging.getLogger("importdoc.jobs")
+
+StageCallback = Callable[[int, str], Awaitable[None]]
+
+# Pipeline stages reported per document, in order. Either the file parses its text
+# layer (PARSING) or it is rendered to an image, but the UI always sees the same plan
+# so the stepper does not jump around between documents.
+DOCUMENT_STAGES = ("PARSING", "CLASSIFYING", "EXTRACTING", "PERSISTING")
+FINAL_STAGE = "FINALIZING"
+
+
+async def _update_progress(job_id: int, **values) -> None:
+    async with session_scope() as session:
+        job = await session.get(Job, job_id)
+        if job is None or job.status not in {"PENDING", "RUNNING"}:
+            return
+        for key, value in values.items():
+            setattr(job, key, value)
 
 
 async def refresh_shipment_status(session: AsyncSession, shipment_id: int) -> None:
@@ -51,8 +70,6 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
     Returns False when any document failed. The worker owns `attempts` and the terminal
     job status; this function only records the error so retries stay consistent.
     """
-    from ..db import session_scope
-
     async with session_scope() as session:
         job = await session.get(Job, job_id)
         if job is None or job.status == "DONE":
@@ -60,14 +77,30 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
         payload = dict(job.payload or {})
         await session.commit()
 
+    doc_ids = list(payload.get("document_ids") or [])
+    await _update_progress(
+        job_id, document_total=len(doc_ids), document_done=0, current_document_id=None, current_stage=None
+    )
+
+    async def on_stage(doc_id: int, stage: str) -> None:
+        await _update_progress(job_id, current_document_id=doc_id, current_stage=stage)
+
     failures: list[str] = []
-    for doc_id in payload.get("document_ids") or []:
+    for doc_id in doc_ids:
         try:
             async with session_scope() as session:
-                await pipeline.process_document(session, llm, doc_id, force=bool(payload.get("force")))
+                await pipeline.process_document(
+                    session, llm, doc_id, force=bool(payload.get("force")), on_stage=on_stage
+                )
         except Exception as exc:
             log.exception("process job %s doc %s failed", job_id, doc_id)
             failures.append(f"doc {doc_id}: {exc}")
+        async with session_scope() as session:
+            job = await session.get(Job, job_id)
+            if job is not None:
+                job.document_done = (job.document_done or 0) + 1
+
+    await _update_progress(job_id, current_document_id=None, current_stage=FINAL_STAGE)
 
     async with session_scope() as session:
         shipment_id = payload.get("shipment_id")

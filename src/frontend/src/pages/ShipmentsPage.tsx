@@ -56,7 +56,9 @@ function ShipmentRow({ shipment }: { shipment: ShipmentSummary }) {
     <tr className="border-t border-divider transition-colors duration-150 hover:bg-parchment">
       <td className={`${CELL} pl-6`}>
         <Link
-          to={`/shipments/${shipment.id}/review`}
+                to={`/shipments/${shipment.id}/${
+                  shipment.status === "PROCESSING" ? "processing" : shipment.document_count === 0 ? "upload" : "review"
+                }`}
           className="type-body-strong text-action active:opacity-70"
         >
           {shipment.code}

@@ -322,14 +322,31 @@ class ExtractionService:
                 )
             )
 
-        for key in result.declaration.model_fields:
+        for key in type(result.declaration).model_fields:
             add(f"declaration.{key}", getattr(result.declaration, key))
         for idx, goods in enumerate(result.goods, start=1):
-            for key in goods.model_fields:
-                add(f"goods.{key}", getattr(goods, key), line_index=idx)
+            for key in type(goods).model_fields:
+                if key == "taxes":
+                    # Compound line_index: goods_seq * 100 + tax_slot (1..5).
+                    # Decoded in pipeline._persist_declaration / _persist with the
+                    # same encoding — see GOODS_TAX_ENCODING there.
+                    for t_idx, tax in enumerate(goods.taxes or [], start=1):
+                        for t_key in type(tax).model_fields:
+                            add(f"goods_tax.{t_key}", getattr(tax, t_key), line_index=idx * 100 + t_idx)
+                else:
+                    add(f"goods.{key}", getattr(goods, key), line_index=idx)
         for idx, tax in enumerate(result.taxes, start=1):
-            for key in tax.model_fields:
+            for key in type(tax).model_fields:
                 add(f"tax.{key}", getattr(tax, key), line_index=idx)
+        for idx, lic in enumerate(result.licenses, start=1):
+            for key in type(lic).model_fields:
+                add(f"license.{key}", getattr(lic, key), line_index=idx)
+        for idx, ins in enumerate(result.instructions, start=1):
+            for key in type(ins).model_fields:
+                add(f"instruction.{key}", getattr(ins, key), line_index=idx)
+        for idx, adj in enumerate(result.adjustments, start=1):
+            for key in type(adj).model_fields:
+                add(f"adjustment.{key}", getattr(adj, key), line_index=idx)
         return rows
 
     def _rows_from_result(

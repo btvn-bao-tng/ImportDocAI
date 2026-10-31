@@ -105,7 +105,8 @@ def _read_xls(path: Path) -> dict:
                     value = int(value)
                 row.append(value if value != "" else None)
             rows.append(row)
-        sheets.append({"name": sheet.name, "rows": rows})
+        merges = [str(rng) for rng in getattr(sheet, "merged_cells", [])]
+        sheets.append({"name": sheet.name, "rows": rows, "merges": merges})
     return {"sheets": sheets}
 
 
@@ -117,7 +118,8 @@ def _read_xlsx(path: Path) -> dict:
     sheets = []
     for ws in wb.worksheets:
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        sheets.append({"name": ws.title, "rows": rows})
+        merges = [str(rng) for rng in ws.merged_cells.ranges]
+        sheets.append({"name": ws.title, "rows": rows, "merges": merges})
     return {"sheets": sheets}
 
 

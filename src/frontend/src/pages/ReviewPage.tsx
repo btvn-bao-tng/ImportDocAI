@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { DocumentExtraction, DocumentSummary, FieldRow, LineItemRow, PartyRow } from "../api/types";
+import type { DocumentExtraction, FieldRow, GridSheet, TemplateCell } from "../api/types";
+import { DocumentSource } from "../components/DocumentViewer";
 import {
   Button,
   Callout,
@@ -12,274 +11,19 @@ import {
   Container,
   EmptyState,
   LocalizedStatus,
-  ProvenanceBadge,
-  ReviewBadge,
   Section,
   Spinner,
   StatusBadge,
-  Table,
-  TableHeadCell,
 } from "../components/ui";
 
-GlobalWorkerOptions.workerSrc = workerSrc;
+const DEFAULT_TEMPLATE = "tokhai_import_v1";
 
-const roleLabels: Record<string, string> = {
-  SELLER: "Bên bán",
-  BUYER: "Bên mua",
-  SHIPPER: "Người gửi hàng",
-  CONSIGNEE: "Người nhận hàng",
-  NOTIFY: "Bên thông báo",
-  ISSUER: "Bên phát hành",
-  INSPECTOR: "Đơn vị kiểm định",
-};
-
-function roleLabel(role: string): string {
-  return roleLabels[role] ?? role;
-}
-
-type DocKind = "pdf" | "excel" | "image" | "other";
-
-const excelExt = /\.(xlsx|xlsm|xls)$/i;
-const imageExt = /\.(jpe?g|png)$/i;
-const pdfExt = /\.pdf$/i;
-
-function docKind(doc: DocumentSummary): DocKind {
-  const name = doc.filename;
-  if (pdfExt.test(name)) return "pdf";
-  if (excelExt.test(name)) return "excel";
-  if (imageExt.test(name)) return "image";
-  if (!doc.has_text_layer && doc.page_count <= 1) return "image";
-  return "other";
-}
-
-function fieldValue(field: FieldRow): string {
-  return field.normalized_value ?? field.raw_value ?? "";
-}
-
-function sourceText(field: FieldRow): string {
-  if (field.provenance_type === "CELL") {
-    return field.cell_ref ? `Ô ${field.cell_ref}` : "ô bảng tính";
-  }
-  if (field.provenance_type === "IMAGE") return "ảnh quét";
-  if (field.page !== null) return `Trang ${field.page}`;
-  return "không rõ nguồn";
-}
-
-function isNeedsAttention(field: FieldRow): boolean {
-  return field.review_status === "UNREVIEWED" || field.review_status === "NEEDS_REVIEW";
-}
-
-type FieldGroupKey = "document." | "transport." | "totals.";
-
-const MATCHERS: { key: FieldGroupKey; title: string }[] = [
-  { key: "document.", title: "Thông tin chứng từ" },
-  { key: "transport.", title: "Thông tin lô hàng" },
-  { key: "totals.", title: "Tổng trị giá" },
-];
-
-const UTILITY_CARD = "rounded-lg border border-hairline bg-canvas";
-const CONTROL =
-  "rounded-sm border border-hairline bg-canvas text-ink transition-colors focus:border-action-focus focus:ring-2 focus:ring-action-focus/30 focus:outline-none";
-const MONO = '[font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace]';
-
-function useSyncedValue(key: string, source: () => string): [string, (next: string) => void] {
-  const [draft, setDraft] = useState<{ key: string; value: string }>({ key, value: source() });
-  const current = draft.key === key ? draft : { key, value: source() };
-  return [current.value, (next: string) => setDraft({ key, value: next })];
-}
-
-function fieldSyncKey(field: FieldRow | undefined): string {
-  return `${field?.id ?? "none"}:${field?.normalized_value ?? ""}:${field?.raw_value ?? ""}`;
-}
-
-interface PdfViewerProps {
-  docId: number;
-  selectedField: FieldRow | null;
-}
-
-function PdfViewer({ docId, selectedField }: PdfViewerProps) {
-  const url = useMemo(() => api.documentFileUrl(docId), [docId]);
-  const pdfQuery = useQuery({
-    queryKey: ["pdf", "document", docId],
-    queryFn: async () => {
-      const task = getDocument({ url });
-      const loaded = await task.promise;
-      return { pdf: loaded, task };
-    },
-    gcTime: 0,
-  });
-  const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
-
-  const pdf = pdfQuery.data?.pdf ?? null;
-  const resolvedError = pdfQuery.isError ? pdfQuery.error.message : null;
-
-  useEffect(() => {
-    const task = pdfQuery.data?.task;
-    if (!task) return;
-    return () => {
-      void task.destroy();
-    };
-  }, [pdfQuery.data]);
-
-  const highlightPage = selectedField?.page ?? null;
-  const highlightBbox =
-    selectedField?.bbox && selectedField.bbox.length === 4 ? selectedField.bbox : null;
-
-  useEffect(() => {
-    if (highlightPage === null) return;
-    const node = pageRefs.current[highlightPage];
-    if (node) node.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [highlightPage, docId]);
-
-  if (resolvedError) {
-    return (
-      <div className="px-4 py-4">
-        <Callout tone="critical" title="Không hiển thị được PDF">
-          {resolvedError}
-        </Callout>
-      </div>
-    );
-  }
-
-  if (!pdf) {
-    return (
-      <div className="flex justify-center px-4 py-16">
-        <Spinner />
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-6 px-4 py-5">
-      {Array.from({ length: pdf.numPages }, (_, index) => {
-        const pageNumber = index + 1;
-        const showBox = highlightBbox !== null && highlightPage === pageNumber;
-        return (
-          <div
-            key={pageNumber}
-            ref={(node) => {
-              pageRefs.current[pageNumber] = node;
-            }}
-            className="flex flex-col items-center"
-          >
-            <PdfPage pdf={pdf} pageNumber={pageNumber} highlight={showBox ? highlightBbox : null} />
-            <span className="type-fine-print mt-2 text-ink-48">
-              Trang {pageNumber} / {pdf.numPages}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function PdfPage({
-  pdf,
-  pageNumber,
-  highlight,
-}: {
-  pdf: PDFDocumentProxy;
-  pageNumber: number;
-  highlight: number[] | null;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [rendered, setRendered] = useState<{ pdf: PDFDocumentProxy; page: number } | null>(null);
-  const [size, setSize] = useState<{ page: number; width: number; height: number } | null>(null);
-  const [renderError, setRenderError] = useState<{ page: number; message: string } | null>(null);
-  const error = renderError?.page === pageNumber ? renderError.message : null;
-  const isRendered = rendered?.pdf === pdf && rendered.page === pageNumber;
-  const viewSize = size?.page === pageNumber ? size : null;
-
-  useEffect(() => {
-    let cancelled = false;
-    let renderTask: { cancel: () => void } | null = null;
-
-    pdf
-      .getPage(pageNumber)
-      .then((page) => {
-        if (cancelled) return;
-        const base = page.getViewport({ scale: 1 });
-        const maxWidth = 760;
-        const scale = Math.min(1.6, Math.max(0.5, maxWidth / base.width));
-        const viewport = page.getViewport({ scale });
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ratio = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(viewport.width * ratio);
-        canvas.height = Math.floor(viewport.height * ratio);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
-        setSize({ page: pageNumber, width: viewport.width, height: viewport.height });
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        const task = page.render({
-          canvas,
-          canvasContext: ctx,
-          viewport,
-          transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined,
-        });
-        renderTask = task;
-        task.promise.then(
-          () => {
-            if (!cancelled) setRendered({ pdf, page: pageNumber });
-          },
-          (err: unknown) => {
-            if (!cancelled && (err as { name?: string } | null)?.name !== "RenderingCancelledException") {
-              setRenderError({ page: pageNumber, message: err instanceof Error ? err.message : "Không hiển thị được trang" });
-            }
-          },
-        );
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setRenderError({ page: pageNumber, message: err instanceof Error ? err.message : "Không tải được trang" });
-      });
-
-    return () => {
-      cancelled = true;
-      renderTask?.cancel();
-    };
-  }, [pdf, pageNumber]);
-
-  const box =
-    highlight && viewSize
-      ? {
-          left: highlight[0] * viewSize.width,
-          top: highlight[1] * viewSize.height,
-          width: Math.max(2, (highlight[2] - highlight[0]) * viewSize.width),
-          height: Math.max(2, (highlight[3] - highlight[1]) * viewSize.height),
-        }
-      : null;
-
-  return (
-    <div
-      className="relative inline-block max-w-full border border-hairline bg-canvas"
-      style={{ width: viewSize ? `${Math.floor(viewSize.width)}px` : undefined, minHeight: viewSize ? undefined : 480 }}
-    >
-      <canvas ref={canvasRef} className="block max-w-full" aria-label={`Trang ${pageNumber}`} />
-      {!isRendered && !error ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-pearl/70">
-          <Spinner />
-        </div>
-      ) : null}
-      {error ? (
-        <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-caption text-critical">
-          {error}
-        </div>
-      ) : null}
-      {box ? (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute border border-action bg-action/15"
-          style={{
-            left: `${box.left}px`,
-            top: `${box.top}px`,
-            width: `${box.width}px`,
-            height: `${box.height}px`,
-          }}
-        />
-      ) : null}
-    </div>
-  );
+interface EvidenceTarget {
+  documentId: number;
+  page: number | null;
+  bbox: number[] | null;
+  cellRef: string | null;
+  label: string;
 }
 
 const columnToIndex = (letters: string): number =>
@@ -288,15 +32,14 @@ const columnToIndex = (letters: string): number =>
     .split("")
     .reduce((acc, ch) => acc * 26 + (ch.charCodeAt(0) - 64), 0) - 1;
 
-function parseCellRef(cellRef: string | null): { sheet: string; row: number; col: number } | null {
-  if (!cellRef) return null;
-  const bang = cellRef.indexOf("!");
-  if (bang < 0) return null;
-  const sheet = cellRef.slice(0, bang).trim();
-  const coord = cellRef.slice(bang + 1).trim();
-  const match = /^([A-Za-z]+)(\d+)$/.exec(coord);
-  if (!match) return null;
-  return { sheet, row: Number(match[2]) - 1, col: columnToIndex(match[1]) };
+function columnIndexToLabel(col: number): string {
+  let label = "";
+  let n = col;
+  while (n >= 0) {
+    label = String.fromCharCode(65 + (n % 26)) + label;
+    n = Math.floor(n / 26) - 1;
+  }
+  return label;
 }
 
 function cellLabel(value: unknown): string {
@@ -306,482 +49,372 @@ function cellLabel(value: unknown): string {
   return "";
 }
 
-function ExcelViewer({ docId, selectedField }: { docId: number; selectedField: FieldRow | null }) {
-  const gridQuery = useQuery({
-    queryKey: ["grid", docId],
-    queryFn: () => api.documentGrid(docId),
+const MONO = '[font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace]';
+
+/* -------------------------------------------------------------------------- */
+/* Merged-cell template grid                                                  */
+/* -------------------------------------------------------------------------- */
+
+interface MergeSpan {
+  rowStart: number;
+  colStart: number;
+  rowSpan: number;
+  colSpan: number;
+}
+
+interface MergeMap {
+  anchors: Map<string, MergeSpan>;
+  covered: Set<string>;
+}
+
+function cellKey(row: number, col: number): string {
+  return `${row}:${col}`;
+}
+
+function buildMergeMap(merges: string[] | undefined): MergeMap {
+  const anchors = new Map<string, MergeSpan>();
+  const covered = new Set<string>();
+  for (const ref of merges ?? []) {
+    const match = /^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/.exec(ref.trim());
+    if (!match) continue;
+    const colStart = columnToIndex(match[1]);
+    const rowStart = Number(match[2]) - 1;
+    const colEnd = match[3] ? columnToIndex(match[3]) : colStart;
+    const rowEnd = match[4] ? Number(match[4]) - 1 : rowStart;
+    if (rowStart < 0 || colStart < 0 || rowEnd < rowStart || colEnd < colStart) continue;
+    const span: MergeSpan = {
+      rowStart,
+      colStart,
+      rowSpan: rowEnd - rowStart + 1,
+      colSpan: colEnd - colStart + 1,
+    };
+    anchors.set(cellKey(rowStart, colStart), span);
+    for (let r = rowStart; r <= rowEnd; r += 1) {
+      for (let c = colStart; c <= colEnd; c += 1) {
+        if (r !== rowStart || c !== colStart) covered.add(cellKey(r, c));
+      }
+    }
+  }
+  return { anchors, covered };
+}
+
+interface TemplateSheetTableProps {
+  sheet: GridSheet;
+  cells: Record<string, TemplateCell>;
+  selectedField: string | null;
+  onValueClick: (cellRef: string, cell: TemplateCell) => void;
+}
+
+function TemplateSheetTable({ sheet, cells, selectedField, onValueClick }: TemplateSheetTableProps) {
+  const rows = sheet.rows ?? [];
+  const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  const { anchors, covered } = useMemo(() => buildMergeMap(sheet.merges), [sheet.merges]);
+
+  if (rows.length === 0 || columnCount === 0) {
+    return (
+      <EmptyState title="Sheet không có dữ liệu" description={`Sheet “${sheet.name}” chưa có ô nào.`} />
+    );
+  }
+
+  return (
+    <div className="overflow-auto bg-canvas">
+      <table
+        className={`w-max border-collapse text-fine-print leading-[1.3] tabular-nums ${MONO}`}
+        aria-label={`Mẫu ${sheet.name}`}
+      >
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {Array.from({ length: columnCount }, (_, col) => {
+                if (covered.has(cellKey(rowIndex, col))) return null;
+                const anchor = anchors.get(cellKey(rowIndex, col));
+                const rowSpan = anchor ? Math.min(anchor.rowSpan, rows.length - rowIndex) : 1;
+                const colSpan = anchor ? Math.min(anchor.colSpan, columnCount - col) : 1;
+                const sizeClass = "min-w-6 max-w-[200px]";
+                const ref = `${columnIndexToLabel(col)}${rowIndex + 1}`;
+                const filled = cells[ref];
+                const selected = filled != null && filled.field === selectedField;
+                const baseClass = "border px-1 py-0.5 align-top break-words whitespace-pre-wrap";
+                if (filled) {
+                  const evidence = filled.evidence;
+                  const hint = evidence
+                    ? `${evidence.label_vi} · ${evidence.filename}${evidence.page ? ` · trang ${evidence.page}` : ""}${
+                        evidence.cell_ref ? ` · ${evidence.cell_ref}` : ""
+                      }`
+                    : `${filled.field} · không lưu nguồn chứng cứ`;
+                  return (
+                    <td
+                      key={col}
+                      rowSpan={rowSpan > 1 ? rowSpan : undefined}
+                      colSpan={colSpan > 1 ? colSpan : undefined}
+                      className={`${baseClass} ${sizeClass} ${
+                        selected
+                          ? "border-action bg-action/20 font-bold text-ink ring-2 ring-action ring-inset"
+                          : evidence
+                            ? "border-[#c8dbf5] bg-[#eaf2fd] text-action"
+                            : "border-dashed border-[#efdfba] bg-[#fff7e6] text-warning"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onValueClick(ref, filled)}
+                        title={hint}
+                        aria-label={`${filled.value} — ${hint}`}
+                        className="block w-full text-left underline decoration-dotted underline-offset-2 active:opacity-70"
+                      >
+                        {filled.value}
+                      </button>
+                    </td>
+                  );
+                }
+                const value = cellLabel(row[col]);
+                return (
+                  <td
+                    key={col}
+                    rowSpan={rowSpan > 1 ? rowSpan : undefined}
+                    colSpan={colSpan > 1 ? colSpan : undefined}
+                    title={value || undefined}
+                    className={`${baseClass} ${sizeClass} border-hairline ${value ? "text-ink" : "bg-pearl/40"}`}
+                  >
+                    {value}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+interface TemplateViewerProps {
+  shipmentId: number;
+  version: string;
+  name: string;
+  selectedField: string | null;
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
+  onValueClick: (cellRef: string, cell: TemplateCell, sheet: string) => void;
+}
+
+function TemplateViewer({
+  shipmentId,
+  version,
+  name,
+  selectedField,
+  maximized = false,
+  onToggleMaximize,
+  onValueClick,
+}: TemplateViewerProps) {
+  const previewQuery = useQuery({
+    queryKey: ["template-preview", shipmentId, version],
+    queryFn: () => api.templatePreview(shipmentId, version),
+    enabled: Number.isFinite(shipmentId) && shipmentId > 0,
   });
   const [pickedSheet, setPickedSheet] = useState<string | null>(null);
-  const selectedCellRef = selectedField?.cell_ref ?? null;
-  const target = useMemo(() => parseCellRef(selectedCellRef), [selectedCellRef]);
-  const cellRef = useRef<HTMLTableCellElement | null>(null);
+  const [fitWidth, setFitWidth] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [fitScale, setFitScale] = useState(1);
+  const fitContainerRef = useRef<HTMLDivElement | null>(null);
 
-  if (gridQuery.isPending) {
-    return (
-      <div className="flex justify-center px-4 py-16">
-        <Spinner />
-      </div>
-    );
-  }
 
-  if (gridQuery.isError) {
-    return (
-      <div className="px-4 py-4">
-        <Callout tone="critical" title="Không đọc được bảng tính">
-          {gridQuery.error.message}
-        </Callout>
-      </div>
-    );
-  }
+  const sheets = previewQuery.data?.sheets ?? [];
+  const cellsBySheet = previewQuery.data?.cells ?? {};
+  const current = sheets.find((s) => s.name === pickedSheet) ?? sheets[0] ?? null;
+  const filledCount = Object.values(cellsBySheet).reduce((total, cells) => total + Object.keys(cells).length, 0);
 
-  const sheets = gridQuery.data?.sheets ?? [];
-  if (sheets.length === 0) {
-    return (
-      <div className="px-4 py-4">
-        <EmptyState title="Bảng tính trống" description="Không có sheet nào để hiển thị." />
-      </div>
-    );
-  }
+  const currentSheetName = current?.name ?? null;
 
-  const current = sheets.find((s) => s.name === (target?.sheet ?? pickedSheet)) ?? sheets[0];
-  const rows = current.rows ?? [];
-  const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  useEffect(() => {
+    if (!fitWidth) return;
+    const wrapper = fitContainerRef.current;
+    const panel = wrapper?.parentElement;
+    const table = wrapper?.querySelector("table");
+    if (!panel || !table) return;
+    const measure = () => {
+      const natural = table.scrollWidth || table.getBoundingClientRect().width;
+      const available = panel.clientWidth - 2;
+      if (natural > 0 && available > 0) {
+        setFitScale(Math.min(1, Math.max(0.35, available / natural)));
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [fitWidth, currentSheetName, filledCount, previewQuery.dataUpdatedAt]);
 
   return (
-    <div className="flex flex-col gap-3 px-4 py-4">
-      {sheets.length > 1 ? (
-        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Chọn sheet">
-          {sheets.map((sheet) => {
-            const active = sheet.name === current.name;
-            return (
-              <button
-                key={sheet.name}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setPickedSheet(sheet.name)}
-                className={`type-caption inline-flex min-h-11 items-center rounded-full border px-4 py-2 transition-colors active:scale-95 ${
-                  active
-                    ? "border-action bg-canvas text-action"
-                    : "border-hairline bg-canvas text-ink-48"
-                }`}
-              >
-                {sheet.name}
-              </button>
-            );
-          })}
+    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-hairline bg-canvas">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-divider px-3 py-2">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 className="type-caption-strong shrink-0 text-ink">Mẫu tờ khai cuối</h2>
+          <p className="type-fine-print truncate text-ink-48" title={`${name} · ${version}`}>
+            {version}
+            {filledCount > 0 ? ` · ${filledCount} ô đã điền` : " · chưa điền"}
+          </p>
         </div>
-      ) : null}
-
-      {rows.length === 0 || columnCount === 0 ? (
-        <EmptyState title="Sheet không có dữ liệu" description={`Sheet “${current.name}” chưa có ô nào.`} />
-      ) : (
-        <div className="max-h-[70vh] overflow-auto border border-hairline bg-canvas">
-          <table className={`border-collapse text-caption tabular-nums ${MONO}`}>
-            <thead>
-              <tr>
-                <th className="sticky top-0 left-0 z-10 border-r border-b border-hairline bg-pearl px-2 py-1" />
-                {Array.from({ length: columnCount }, (_, col) => (
-                  <th
-                    key={col}
-                    scope="col"
-                    className="sticky top-0 z-[5] border-r border-b border-hairline bg-pearl px-2 py-1 text-fine-print font-normal text-ink-48"
-                  >
-                    {String.fromCharCode(65 + (col % 26)).padStart(Math.floor(col / 26) + 1, String.fromCharCode(65 + (col % 26)))}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  <th
-                    scope="row"
-                    className="sticky left-0 z-[1] border-r border-b border-hairline bg-pearl px-2 py-1 text-fine-print font-normal text-ink-48"
-                  >
-                    {rowIndex + 1}
-                  </th>
-                  {Array.from({ length: columnCount }, (_, col) => {
-                    const isTarget =
-                      target !== null &&
-                      target.sheet === current.name &&
-                      target.row === rowIndex &&
-                      target.col === col;
-                    return (
-                      <td
-                        key={col}
-                        ref={isTarget ? cellRef : undefined}
-                        className={`max-w-[280px] truncate border-r border-b border-divider px-2 py-1 text-ink-80 ${
-                          isTarget ? "bg-action/15 ring-1 ring-action ring-inset" : ""
-                        }`}
-                        title={cellLabel(row[col])}
-                      >
-                        {cellLabel(row[col])}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="flex items-center gap-1" role="group" aria-label="Thu phóng mẫu">
+            <button
+              type="button"
+              onClick={() => {
+                setFitWidth((value) => {
+                  if (value) setZoom(Math.round(fitScale * 10) / 10);
+                  return !value;
+                });
+              }}
+              aria-pressed={fitWidth}
+              title={fitWidth ? "Tắt thu vừa khung (xem kích thước thật, cuộn ngang)" : "Thu vừa khung để so sánh"}
+              className={`type-fine-print rounded-full border px-2 py-0.5 active:scale-95 ${
+                fitWidth ? "border-action bg-canvas text-action" : "border-hairline text-ink-48"
+              }`}
+            >
+              Vừa khung
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFitWidth(false);
+                setZoom((value) => Math.max(0.4, Math.round((value - 0.1) * 10) / 10));
+              }}
+              title="Thu nhỏ"
+              className="type-fine-print h-6 w-6 rounded-full border border-hairline text-ink-48 active:scale-95"
+            >
+              −
+            </button>
+            <span className="type-fine-print w-9 text-center tabular-nums text-ink-48">
+              {Math.round((fitWidth ? fitScale : zoom) * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setFitWidth(false);
+                setZoom((value) => Math.min(1.5, Math.round((value + 0.1) * 10) / 10));
+              }}
+              title="Phóng to"
+              className="type-fine-print h-6 w-6 rounded-full border border-hairline text-ink-48 active:scale-95"
+            >
+              +
+            </button>
+          </div>
+          <a
+            href={api.templateFileUrl(version)}
+            target="_blank"
+            rel="noreferrer"
+            className="type-fine-print text-action underline-offset-2 active:opacity-70"
+          >
+            Mở tệp mẫu
+          </a>
+          {onToggleMaximize ? (
+            <button
+              type="button"
+              onClick={onToggleMaximize}
+              aria-pressed={maximized}
+              title={maximized ? "Thu nhỏ khung mẫu" : "Mở rộng khung mẫu"}
+              className="type-fine-print rounded-full border border-hairline px-2 py-0.5 text-ink-48 active:scale-95"
+            >
+              {maximized ? "Thu nhỏ" : "Mở rộng"}
+            </button>
+          ) : null}
         </div>
-      )}
-      {selectedField?.cell_ref ? (
-        <p className="type-fine-print text-ink-48">Đang chỉ ô {selectedField.cell_ref}</p>
-      ) : null}
-    </div>
-  );
-}
+      </header>
 
-function ImageViewer({ docId }: { docId: number }) {
-  return (
-    <div className="flex justify-center px-4 py-5">
-      <img
-        src={api.documentFileUrl(docId)}
-        alt="Chứng từ dạng ảnh"
-        className="max-h-[75vh] max-w-full border border-hairline bg-canvas object-contain"
-      />
-    </div>
-  );
-}
-
-function DocumentSource({ doc, selectedField }: { doc: DocumentSummary; selectedField: FieldRow | null }) {
-  const kind = docKind(doc);
-  const noticeGlyph = selectedField?.provenance_type === "IMAGE";
-
-  return (
-    <div className="flex flex-col gap-3">
-      {noticeGlyph ? (
-        <div className="px-4 pt-4">
-          <Callout tone="info" title="Ghi chú nguồn">
-            Vị trí nguồn chỉ xác định ở mức trang
+      {previewQuery.isPending ? (
+        <div className="flex flex-1 items-center justify-center">
+          <Spinner />
+        </div>
+      ) : previewQuery.isError ? (
+        <div className="px-4 py-4">
+          <Callout tone="critical" title="Không tải được mẫu">
+            {previewQuery.error.message}
           </Callout>
         </div>
-      ) : null}
-      {kind === "pdf" ? (
-        <PdfViewer docId={doc.id} selectedField={selectedField} />
-      ) : kind === "excel" ? (
-        <ExcelViewer docId={doc.id} selectedField={selectedField} />
-      ) : kind === "image" ? (
-        <ImageViewer docId={doc.id} />
+      ) : sheets.length === 0 ? (
+        <div className="px-4 py-4">
+          <EmptyState title="Mẫu trống" description="Mẫu này không có sheet nào để hiển thị." />
+        </div>
       ) : (
-        <div className="mx-4 my-4 flex flex-col items-center gap-3 border border-hairline bg-canvas px-6 py-10 text-center">
-          <p className="type-body text-ink-80">
-            Không có bản xem trước dạng nhúng cho tệp này.
-          </p>
-          <a href={api.documentFileUrl(doc.id)} target="_blank" rel="noreferrer" className="type-body text-action underline">
-            Mở tệp gốc
-          </a>
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface FieldRowProps {
-  shipmentId: number;
-  field: FieldRow;
-  selected: boolean;
-  onSelect: (field: FieldRow) => void;
-}
-
-const IMPORTANT_DOT = (
-  <span className="inline-flex items-center gap-1 text-fine-print font-normal text-ink-48">
-    <span className="h-1 w-1 rounded-full bg-action" aria-hidden="true" />
-    quan trọng
-  </span>
-);
-
-function ScalarFieldRow({ shipmentId, field, selected, onSelect }: FieldRowProps) {
-  const queryClient = useQueryClient();
-  const [value, setValue] = useSyncedValue(
-    `${shipmentId}:${fieldSyncKey(field)}`,
-    () => fieldValue(field),
-  );
-  const [error, setError] = useState<string | null>(null);
-
-  const saveMutation = useMutation({
-    mutationFn: () => api.patchField(shipmentId, field.id, value),
-    onSuccess: async () => {
-      setError(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["extractions", shipmentId] }),
-        queryClient.invalidateQueries({ queryKey: ["shipment", shipmentId] }),
-      ]);
-    },
-    onError: (err: Error) => setError(err.message),
-  });
-
-  const confirmMutation = useMutation({
-    mutationFn: () => api.confirmField(shipmentId, field.id),
-    onSuccess: async () => {
-      setError(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["extractions", shipmentId] }),
-        queryClient.invalidateQueries({ queryKey: ["shipment", shipmentId] }),
-      ]);
-    },
-    onError: (err: Error) => setError(err.message),
-  });
-
-  const dirty = value !== fieldValue(field);
-  const busy = saveMutation.isPending || confirmMutation.isPending;
-
-  return (
-    <div
-      onClick={() => onSelect(field)}
-      className={`cursor-pointer border-b border-divider px-6 py-4 last:border-b-0 ${
-        selected ? "border-l-[3px] border-l-action pl-[21px]" : ""
-      }`}
-    >
-      <div className="min-w-0">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <label htmlFor={`field-${field.id}`} className="type-body-strong min-w-0 text-ink">
-            {field.label_vi}
-          </label>
-          {field.critical ? IMPORTANT_DOT : null}
-          <span className="flex items-center gap-1.5">
-            <ProvenanceBadge type={field.provenance_type} />
-            <ReviewBadge status={field.review_status} critical={field.critical} />
-          </span>
-        </div>
-
-        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          <input
-            id={`field-${field.id}`}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onFocus={() => onSelect(field)}
-            aria-label={`Giá trị ${field.label_vi}`}
-            className={`type-body min-h-11 min-w-0 flex-1 px-3 py-2 ${CONTROL} ${
-              isNeedsAttention(field) && field.critical ? "border-critical/40" : ""
-            }`}
-          />
-          {field.unit ? <span className="type-caption shrink-0 text-ink-48">{field.unit}</span> : null}
-          <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <Button size="sm" variant="ghost" disabled={!dirty || busy} onClick={() => saveMutation.mutate()}>
-              {saveMutation.isPending ? "Đang lưu…" : "Lưu"}
-            </Button>
-            <Button size="sm" variant="primary" disabled={busy} onClick={() => confirmMutation.mutate()}>
-              {confirmMutation.isPending ? "Đang xác nhận…" : "Xác nhận"}
-            </Button>
-          </div>
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-baseline gap-x-2 border-t border-divider pt-2">
-          <p className="type-fine-print text-ink-48">
-            Nguồn: {sourceText(field)}
-            {field.confidence !== null ? ` · độ tin cậy ${Math.round(field.confidence * 100)}%` : ""}
-            {field.grounding_verified ? "" : " · chưa đối chiếu"}
-          </p>
-          {error ? <p className="type-fine-print text-critical">{error}</p> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const LINE_COLUMNS: { key: string; title: string; fallback: (li: LineItemRow) => string | null; numeric: boolean }[] = [
-  { key: "line.description", title: "Mô tả", fallback: (li) => li.description ?? li.raw_description, numeric: false },
-  { key: "line.spec", title: "Quy cách", fallback: (li) => li.spec, numeric: false },
-  { key: "line.quantity", title: "Số lượng", fallback: (li) => li.quantity, numeric: true },
-  { key: "line.unit_price", title: "Đơn giá", fallback: (li) => li.unit_price, numeric: true },
-  { key: "line.amount", title: "Thành tiền", fallback: (li) => li.amount, numeric: true },
-];
-
-function LineCell({
-  shipmentId,
-  field,
-  fallback,
-  numeric,
-  selected,
-  onSelect,
-}: {
-  shipmentId: number;
-  field: FieldRow | undefined;
-  fallback: string | null;
-  numeric: boolean;
-  selected: boolean;
-  onSelect: (field: FieldRow) => void;
-}) {
-  const queryClient = useQueryClient();
-  const [value, setValue] = useSyncedValue(
-    `${shipmentId}:${fieldSyncKey(field)}`,
-    () => (field ? fieldValue(field) : ""),
-  );
-  const [error, setError] = useState<string | null>(null);
-
-  const saveMutation = useMutation({
-    mutationFn: () => {
-      if (!field) throw new Error("Không có trường để lưu");
-      return api.patchField(shipmentId, field.id, value);
-    },
-    onSuccess: async () => {
-      setError(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["extractions", shipmentId] }),
-        queryClient.invalidateQueries({ queryKey: ["shipment", shipmentId] }),
-      ]);
-    },
-    onError: (err: Error) => setError(err.message),
-  });
-
-  if (!field) {
-    return (
-      <td className={`type-body px-3 py-2 align-top text-ink-48 ${numeric ? "text-right tabular-nums" : ""}`}>
-        {fallback ?? "—"}
-      </td>
-    );
-  }
-
-  const dirty = value !== fieldValue(field);
-
-  return (
-    <td className={`px-3 py-2 align-top ${selected ? "border-l-[3px] border-l-action pl-[9px]" : ""}`}>
-      <div className="flex flex-col gap-1">
-        <input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onFocus={() => onSelect(field)}
-          onClick={(e) => e.stopPropagation()}
-          aria-label={`${field.label_vi} dòng ${field.line_item_id ?? ""}`}
-          className={`type-body min-h-11 w-full min-w-[72px] px-2 py-1 text-ink ${CONTROL} ${
-            isNeedsAttention(field) && field.critical ? "border-critical/40" : ""
-          } ${numeric ? "text-right tabular-nums" : ""}`}
-        />
-        <div className="flex items-center justify-between gap-1 px-0.5" onClick={(e) => e.stopPropagation()}>
-          <span className="truncate type-fine-print text-ink-48">{sourceText(field)}</span>
-          <button
-            type="button"
-            disabled={!dirty || saveMutation.isPending}
-            onClick={() => saveMutation.mutate()}
-            className="type-fine-print text-action underline decoration-1 underline-offset-2 disabled:text-ink-48 disabled:no-underline"
-          >
-            Lưu
-          </button>
-        </div>
-        {error ? <span className="px-0.5 type-fine-print text-critical">{error}</span> : null}
-      </div>
-    </td>
-  );
-}
-
-function LineItemsTable({
-  shipmentId,
-  lineItems,
-  selectedFieldId,
-  onSelect,
-}: {
-  shipmentId: number;
-  lineItems: LineItemRow[];
-  selectedFieldId: number | null;
-  onSelect: (field: FieldRow) => void;
-}) {
-  if (lineItems.length === 0) {
-    return (
-      <div className="px-6 py-4">
-        <EmptyState title="Chưa có dòng hàng" description="Chứng từ chưa trích xuất được dòng hàng nào." />
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-6 py-1">
-      <Table
-        minWidth={600}
-        head={
-          <>
-            <TableHeadCell>STT</TableHeadCell>
-            {LINE_COLUMNS.map((col) => (
-              <TableHeadCell key={col.key} align={col.numeric ? "right" : "left"}>
-                {col.title}
-              </TableHeadCell>
-            ))}
-          </>
-        }
-      >
-        {lineItems.map((li) => (
-          <tr key={li.id} className="border-b border-divider last:border-b-0">
-            <td className="type-body px-3 py-2 align-top tabular-nums text-ink-48">{li.seq}</td>
-            {LINE_COLUMNS.map((col) => (
-              <LineCell
-                key={col.key}
-                shipmentId={shipmentId}
-                field={li.fields.find((f) => f.field_key === col.key)}
-                fallback={col.fallback(li)}
-                numeric={col.numeric}
-                selected={selectedFieldId !== null && li.fields.some((f) => f.field_key === col.key && f.id === selectedFieldId)}
-                onSelect={onSelect}
-              />
-            ))}
-          </tr>
-        ))}
-      </Table>
-    </div>
-  );
-}
-
-function PartiesSection({ parties }: { parties: PartyRow[] }) {
-  if (parties.length === 0) {
-    return <p className="type-caption px-6 py-4 text-ink-48">Chưa trích xuất được bên tham gia nào.</p>;
-  }
-
-  return (
-    <div className="flex flex-col gap-3 px-6 py-4">
-      <Callout tone="info" title="Không tự động gộp công ty">
-        Hệ thống liệt kê các bên theo từng chứng từ. Các tên có thể trùng cùng một công ty nhưng không được tự động gộp — hãy kiểm tra thủ công trước khi xuất.
-      </Callout>
-      <ul className="divide-y divide-divider">
-        {parties.map((party) => (
-          <li key={party.id} className="py-3">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="type-body text-ink">{party.canonical_name || party.raw_name}</span>
-              <span className="type-fine-print text-ink-48">({party.raw_name})</span>
-            </div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {party.roles.map((role) => (
-                <span
-                  key={role}
-                  className="type-fine-print inline-flex items-center rounded-md bg-pearl px-2 py-1 text-ink-48"
-                >
-                  {roleLabel(role)}
-                </span>
-              ))}
-            </div>
-            {party.documents.length > 0 ? (
-              <ul className="mt-1.5 flex flex-col gap-0.5">
-                {party.documents.map((d, index) => (
-                  <li key={`${d.document_id}-${d.role}-${index}`} className="type-fine-print text-ink-48">
-                    {roleLabel(d.role)} · {d.filename ?? `Chứng từ #${d.document_id}`}
-                  </li>
-                ))}
-              </ul>
+        <>
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-divider px-3 py-1.5">
+            {sheets.length > 1 ? (
+              <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Chọn sheet mẫu">
+              {sheets.map((sheet) => {
+                const active = sheet.name === current?.name;
+                return (
+                  <button
+                    key={sheet.name}
+                    type="button"
+                    role="tab"
+                    id={`template-tab-${sheet.name}`}
+                    aria-selected={active}
+                    aria-controls="template-tabpanel"
+                    onClick={() => setPickedSheet(sheet.name)}
+                    className={`type-caption inline-flex min-h-9 items-center rounded-full border px-4 py-1.5 transition-colors active:scale-95 ${
+                      active ? "border-action bg-canvas text-action" : "border-hairline bg-canvas text-ink-48"
+                    }`}
+                  >
+                    {sheet.name}
+                  </button>
+                );
+              })}
+              </div>
             ) : null}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
+            <p
+              className={`type-fine-print min-w-0 flex-1 truncate text-right ${
+                filledCount > 0 ? "text-action" : "text-warning"
+              }`}
+            >
+              {filledCount > 0
+                ? "Bấm giá trị màu xanh để xem chứng cứ ở cột trái."
+                : "Chưa có dữ liệu trích xuất để điền vào mẫu."}
+            </p>
+          </div>
 
-function DataCard({
-  title,
-  caption,
-  children,
-}: {
-  title: string;
-  caption?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className={`${UTILITY_CARD} overflow-hidden`}>
-      <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-divider px-6 py-4">
-        <h2 className="type-tagline text-ink">{title}</h2>
-        {caption ? <p className="type-caption text-ink-48">{caption}</p> : null}
-      </header>
-      {children}
+          <div
+            id="template-tabpanel"
+            role="tabpanel"
+            aria-labelledby={current ? `template-tab-${current.name}` : undefined}
+            className="min-h-0 flex-1 overflow-auto"
+          >
+            <div
+              ref={fitContainerRef}
+              style={
+                fitWidth
+                  ? { zoom: fitScale }
+                  : { zoom }
+              }
+              className="origin-top-left"
+            >
+            {current ? (
+              <TemplateSheetTable
+                sheet={current}
+                cells={cellsBySheet[current.name] ?? {}}
+                selectedField={selectedField}
+                onValueClick={(ref, cell) => onValueClick(ref, cell, current.name)}
+              />
+            ) : null}
+            </div>
+          </div>
+        </>
+      )}
     </section>
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Resizable split                                                            */
+/* -------------------------------------------------------------------------- */
+
+const MIN_SPLIT = 0.15;
+const MAX_SPLIT = 0.85;
+const DEFAULT_SPLIT = 0.5;
+const KEYBOARD_STEP = 0.02;
+
+function clampSplit(value: number): number {
+  return Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, value));
 }
 
 export default function ReviewPage() {
@@ -791,22 +424,38 @@ export default function ReviewPage() {
   const validId = Number.isFinite(shipmentId) && shipmentId > 0;
 
   const [activeDocId, setActiveDocId] = useState<number | null>(null);
-  const [selectedFieldId, setSelectedFieldId] = useState<number | null>(null);
+  const [split, setSplit] = useState(DEFAULT_SPLIT);
+  const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
+  const [evidenceField, setEvidenceField] = useState<string | null>(null);
+  const [evidenceNotice, setEvidenceNotice] = useState<string | null>(null);
+  const [maximizedPanel, setMaximizedPanel] = useState<"source" | "template" | null>(null);
+  const splitRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(min-width: 1024px)");
+    const reset = () => {
+      if (!query.matches) setSplit(DEFAULT_SPLIT);
+    };
+    reset();
+    query.addEventListener("change", reset);
+    return () => query.removeEventListener("change", reset);
+  }, []);
 
   const extractionsQuery = useQuery({
     queryKey: ["extractions", shipmentId],
     queryFn: () => api.getExtractions(shipmentId),
     enabled: validId,
   });
-  const partiesQuery = useQuery({
-    queryKey: ["parties", shipmentId],
-    queryFn: () => api.getParties(shipmentId),
-    enabled: validId,
-  });
   const shipmentQuery = useQuery({
     queryKey: ["shipment", shipmentId],
     queryFn: () => api.getShipment(shipmentId),
     enabled: validId,
+  });
+  const templatesQuery = useQuery({
+    queryKey: ["templates"],
+    queryFn: () => api.listTemplates(),
   });
 
   const documents = useMemo<DocumentExtraction[]>(
@@ -815,28 +464,14 @@ export default function ReviewPage() {
   );
   const activeDocChanged = activeDocId !== null && !documents.some((d) => d.document.id === activeDocId);
   if (activeDocChanged) setActiveDocId(null);
-  const activeDoc = activeDocChanged ? documents[0] ?? null : documents.find((d) => d.document.id === activeDocId) ?? documents[0] ?? null;
+  const activeDoc = activeDocChanged
+    ? documents[0] ?? null
+    : documents.find((d) => d.document.id === activeDocId) ?? documents[0] ?? null;
 
   const allFields = useMemo<FieldRow[]>(
     () => documents.flatMap((d) => [...d.fields, ...d.line_items.flatMap((li) => li.fields)]),
     [documents],
   );
-
-  const selectedField = allFields.find((f) => f.id === selectedFieldId) ?? null;
-
-  function selectField(field: FieldRow) {
-    setSelectedFieldId(field.id);
-    if (field.document_id !== activeDoc?.document.id) setActiveDocId(field.document_id);
-  }
-
-  const groupedFields = useMemo(() => {
-    const source = activeDoc?.fields ?? [];
-    return MATCHERS.map(({ key, title }) => ({
-      key,
-      title,
-      fields: source.filter((f) => f.field_key.startsWith(key)),
-    }));
-  }, [activeDoc]);
 
   const criticalAttention = useMemo(
     () =>
@@ -847,6 +482,84 @@ export default function ReviewPage() {
       ).length,
     [allFields],
   );
+
+  const templateVersion = useMemo(() => {
+    const templates = templatesQuery.data ?? [];
+    if (templates.some((t) => t.version === DEFAULT_TEMPLATE)) return DEFAULT_TEMPLATE;
+    return templates[0]?.version ?? DEFAULT_TEMPLATE;
+  }, [templatesQuery.data]);
+
+  const templateName = useMemo(() => {
+    const templates = templatesQuery.data ?? [];
+    return templates.find((t) => t.version === templateVersion)?.name ?? templateVersion;
+  }, [templatesQuery.data, templateVersion]);
+
+  function handleTemplateValueClick(cellRef: string, cell: TemplateCell, sheet: string) {
+    setEvidenceField(cell.field);
+    const ev = cell.evidence;
+    if (!ev) {
+      setEvidence(null);
+      setEvidenceNotice(`“${cell.value}” (${cell.field} · ${sheet}!${cellRef}) không lưu nguồn chứng cứ trong hồ sơ.`);
+      return;
+    }
+    const targetDoc = documents.find((d) => d.document.id === ev.document_id);
+    if (!targetDoc) {
+      setEvidence(null);
+      setEvidenceNotice(`Chứng cứ của “${cell.value}” nằm ở tệp không còn trong lô hàng.`);
+      return;
+    }
+    setEvidenceNotice(null);
+    setActiveDocId(ev.document_id);
+    setEvidence({
+      documentId: ev.document_id,
+      page: ev.page,
+      bbox: ev.bbox,
+      cellRef: ev.cell_ref,
+      label: ev.label_vi,
+    });
+  }
+
+  function updateSplitFromClientX(clientX: number) {
+    const el = splitRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    setSplit(clampSplit((clientX - rect.left) / rect.width));
+  }
+
+  function handleSplitterPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    draggingRef.current = true;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }
+
+  function handleSplitterPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (!draggingRef.current) return;
+    updateSplitFromClientX(event.clientX);
+  }
+
+  function handleSplitterPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    draggingRef.current = false;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+  }
+
+  function handleSplitterKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setSplit((value) => clampSplit(value - KEYBOARD_STEP));
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setSplit((value) => clampSplit(value + KEYBOARD_STEP));
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setSplit(MIN_SPLIT);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setSplit(MAX_SPLIT);
+    }
+  }
 
   if (!validId) {
     return (
@@ -903,19 +616,14 @@ export default function ReviewPage() {
   }
 
   const shipment = shipmentQuery.data;
-  const lineItemCount = activeDoc?.line_items.length ?? 0;
-  const lineFieldCount = activeDoc?.line_items.reduce((sum, li) => sum + li.fields.length, 0) ?? 0;
-  const lineAttention = activeDoc?.line_items.reduce(
-    (sum, li) => sum + li.fields.filter((f) => f.critical && isNeedsAttention(f)).length,
-    0,
-  ) ?? 0;
+  const splitPercent = `${(split * 100).toFixed(2)}%`;
 
   return (
-    <Section tone="light">
-      <Container width="wide">
-        <div className="flex flex-col gap-6">
-          <header className="sticky top-0 z-20 -mx-4 border-b border-hairline bg-parchment/80 px-4 backdrop-blur-xl sm:-mx-6 sm:px-6">
-            <div className="flex min-h-[64px] flex-col gap-2 py-3 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-x-6">
+    <Section tone="light" className="pt-4 pb-6 sm:pt-4 sm:pb-6 lg:h-[calc(100dvh-44px)] lg:pb-4">
+      <Container width="wide" className="lg:h-full">
+        <div className="flex flex-col gap-2 lg:h-full lg:min-h-0">
+          <header className="sticky top-11 z-20 -mx-4 shrink-0 border-b border-hairline bg-parchment/80 px-4 backdrop-blur-xl sm:-mx-6 sm:px-6 lg:top-0">
+            <div className="flex flex-col gap-1 py-2 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-x-6">
               <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
                 <h1 className="type-tagline text-ink">{shipment?.code ?? `#${shipmentId}`}</h1>
                 {shipment ? <StatusBadge status={shipment.status} /> : null}
@@ -935,112 +643,144 @@ export default function ReviewPage() {
                 )}
                 <Button
                   variant="primary"
-                  className="min-h-11 w-full px-6 sm:w-auto"
-                  onClick={() => navigate(`/shipments/${shipmentId}/export`)}
+                  className="min-h-9 w-full px-4 sm:w-auto"
+                  onClick={() => navigate(`/shipments/${shipmentId}/verify`)}
                 >
-                  Chuyển đến xuất Excel
+                  Kiểm tra &amp; xuất file
                 </Button>
               </div>
             </div>
           </header>
 
-          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
-            <aside className="flex min-w-0 flex-col gap-3 lg:sticky lg:top-[88px] lg:h-[calc(100vh-104px)]">
-              <section className={`${UTILITY_CARD} flex min-h-0 flex-1 flex-col overflow-hidden`}>
-                <div
-                  role="group"
-                  aria-label="Chọn chứng từ"
-                  className="scrollbar-none relative z-10 flex shrink-0 items-stretch gap-2 overflow-x-auto border-b border-divider bg-canvas px-4 py-3"
+          <div
+            ref={splitRef}
+            className="flex min-h-0 flex-col items-stretch gap-4 lg:min-h-0 lg:flex-1 lg:flex-row lg:gap-0"
+            style={{ ["--split-width" as string]: splitPercent }}
+          >
+            <aside
+              id="source-documents"
+              aria-label="Chứng từ nguồn"
+              className={`flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-hairline bg-canvas lg:h-full lg:shrink-0 ${
+                maximizedPanel === "source"
+                  ? "h-[75vh] lg:w-[calc(100%-0.75rem)]"
+                  : maximizedPanel === "template"
+                    ? "h-[60vh] lg:hidden"
+                    : "h-[60vh] lg:w-[var(--split-width)]"
+              }`}
+            >
+              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-divider px-3 py-1.5">
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <h2 className="type-caption-strong shrink-0 text-ink">Chứng từ nguồn</h2>
+                  <p className="type-fine-print truncate text-ink-48">
+                    {activeDoc ? activeDoc.document.filename : "Chưa chọn chứng từ"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMaximizedPanel((current) => (current === "source" ? null : "source"))}
+                  aria-pressed={maximizedPanel === "source"}
+                  title={maximizedPanel === "source" ? "Thu nhỏ khung chứng từ" : "Mở rộng khung chứng từ"}
+                  className="type-fine-print shrink-0 rounded-full border border-hairline px-2 py-0.5 text-ink-48 active:scale-95"
                 >
-                  {documents.map((doc) => {
-                    const active = doc.document.id === activeDoc?.document.id;
-                    return (
-                      <div
-                        key={doc.document.id}
-                        className="flex min-w-0 flex-none flex-col items-start"
-                        aria-current={active ? "true" : undefined}
+                  {maximizedPanel === "source" ? "Thu nhỏ" : "Mở rộng"}
+                </button>
+              </div>
+              <div
+                role="group"
+                aria-label="Chọn chứng từ"
+                className="scrollbar-none relative z-10 flex shrink-0 items-stretch gap-1.5 overflow-x-auto border-b border-divider bg-canvas px-3 py-1.5"
+              >
+                {documents.map((doc) => {
+                  const active = doc.document.id === activeDoc?.document.id;
+                  return (
+                    <div
+                      key={doc.document.id}
+                      className="flex min-w-0 flex-none flex-col items-start"
+                      aria-current={active ? "true" : undefined}
+                    >
+                      <Chip
+                        active={active}
+                        className="!inline-flex max-w-[220px] justify-start"
+                        title={doc.document.filename}
+                        onClick={() => setActiveDocId(doc.document.id)}
                       >
-                        <Chip
-                          active={active}
-                          className="!inline-flex max-w-[220px] justify-start"
-                          title={doc.document.filename}
-                          onClick={() => {
-                            setActiveDocId(doc.document.id);
-                            setSelectedFieldId(null);
-                          }}
-                        >
-                          <span className="block truncate">{doc.document.filename}</span>
-                        </Chip>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-y-auto bg-parchment p-3">
-                  {activeDoc ? (
-                    <div className="border border-hairline bg-canvas">
-                      <DocumentSource doc={activeDoc.document} selectedField={selectedField} />
+                        <span className="block truncate">{doc.document.filename}</span>
+                      </Chip>
                     </div>
-                  ) : null}
-                </div>
-              </section>
+                  );
+                })}
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto bg-parchment p-3">
+                {evidenceNotice ? (
+                  <p
+                    role="status"
+                    className="type-fine-print mb-2 truncate rounded-sm border border-[#efdfba] bg-[#fff7e6] px-2 py-1 text-warning"
+                    title={evidenceNotice}
+                  >
+                    Không có chứng cứ để đánh dấu · {evidenceNotice}
+                  </p>
+                ) : evidence ? (
+                  <p className="type-fine-print mb-2 truncate rounded-sm border border-[#c8dbf5] bg-[#eaf2fd] px-2 py-1 text-action">
+                    Đang đánh dấu: {evidence.label}
+                    {evidence.cellRef ? ` · ${evidence.cellRef}` : evidence.page ? ` · trang ${evidence.page}` : null}
+                  </p>
+                ) : null}
+                {activeDoc ? (
+                  <div className="border border-hairline bg-canvas">
+                    <DocumentSource doc={activeDoc.document} evidence={evidence} />
+                  </div>
+                ) : null}
+              </div>
             </aside>
 
-            <main className="flex min-w-0 flex-col gap-6">
-              {activeDoc ? (
-                <>
-                  {groupedFields.map((group) =>
-                    group.fields.length === 0 ? null : (
-                      <DataCard
-                        key={group.key}
-                        title={group.title}
-                        caption={`${group.fields.length} trường · ${group.fields.filter((f) => isNeedsAttention(f)).length} cần xem lại`}
-                      >
-                        <div>
-                          {group.fields.map((field) => (
-                            <ScalarFieldRow
-                              key={field.id}
-                              shipmentId={shipmentId}
-                              field={field}
-                              selected={field.id === selectedFieldId}
-                              onSelect={selectField}
-                            />
-                          ))}
-                        </div>
-                      </DataCard>
-                    ),
-                  )}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Điều chỉnh độ rộng khung"
+              aria-controls="source-documents"
+              aria-valuemin={Math.round(MIN_SPLIT * 100)}
+              aria-valuemax={Math.round(MAX_SPLIT * 100)}
+              aria-valuenow={Math.round(split * 100)}
+              tabIndex={0}
+              onPointerDown={handleSplitterPointerDown}
+              onPointerMove={handleSplitterPointerMove}
+              onPointerUp={handleSplitterPointerUp}
+              onPointerCancel={handleSplitterPointerUp}
+              onKeyDown={handleSplitterKeyDown}
+              className={`group relative shrink-0 cursor-col-resize touch-none items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-action ${
+                maximizedPanel ? "hidden" : "hidden w-3 lg:flex"
+              }`}
+            >
+              <span
+                aria-hidden="true"
+                className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-hairline transition-colors group-hover:bg-action group-focus-visible:bg-action group-active:bg-action"
+              />
+              <span
+                aria-hidden="true"
+                className="relative h-12 w-1 rounded-full bg-ink-48/50 transition-colors group-hover:bg-action group-focus-visible:bg-action group-active:bg-action"
+              />
+            </div>
 
-                  <DataCard
-                    title="Dòng hàng"
-                    caption={`${lineItemCount} dòng · ${lineFieldCount} trường · ${lineAttention} cần xem lại`}
-                  >
-                    <LineItemsTable
-                      shipmentId={shipmentId}
-                      lineItems={activeDoc.line_items}
-                      selectedFieldId={selectedFieldId}
-                      onSelect={selectField}
-                    />
-                  </DataCard>
-                </>
-              ) : null}
-
-              <DataCard title="Các bên tham gia">
-                {partiesQuery.isPending ? (
-                  <div className="flex justify-center px-6 py-8">
-                    <Spinner />
-                  </div>
-                ) : partiesQuery.isError ? (
-                  <div className="px-6 py-4">
-                    <Callout tone="critical" title="Không tải được danh sách các bên">
-                      {partiesQuery.error.message}
-                    </Callout>
-                  </div>
-                ) : (
-                  <PartiesSection parties={partiesQuery.data ?? []} />
-                )}
-              </DataCard>
-            </main>
+            <div
+              className={`min-w-0 flex-1 lg:pl-0 ${
+                maximizedPanel === "source" ? "hidden" : ""
+              }`}
+            >
+              <div className={maximizedPanel === "template" ? "h-[75vh] min-h-0 lg:h-full" : "h-[70vh] min-h-0 lg:h-full"}>
+                <TemplateViewer
+                  shipmentId={shipmentId}
+                  version={templateVersion}
+                  name={templateName}
+                  selectedField={evidenceField}
+                  maximized={maximizedPanel === "template"}
+                  onToggleMaximize={() =>
+                    setMaximizedPanel((current) => (current === "template" ? null : "template"))
+                  }
+                  onValueClick={handleTemplateValueClick}
+                />
+              </div>
+            </div>
           </div>
         </div>
       </Container>

@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { DocumentExtraction, ExportSummary, FieldRow, LineItemRow } from "../api/types";
+import type { DocumentExtraction, ExportSummary, FieldRow, LineItemRow, TemplatePreviewResponse } from "../api/types";
 import {
   Button,
   ButtonLink,
@@ -111,6 +111,123 @@ function valueOrDash(value: string): string {
 
 const CARD = "rounded-lg border border-hairline bg-canvas";
 const CELL = "py-3 pr-4 align-top";
+
+function columnIndex(letters: string): number {
+  return letters
+    .toUpperCase()
+    .split("")
+    .reduce((acc, ch) => acc * 26 + (ch.charCodeAt(0) - 64), 0);
+}
+
+function fieldLabel(key: string): string {
+  const known: Record<string, string> = {
+    "declaration.bill_of_lading_no": "Số vận đơn",
+    "declaration.invoice_total": "Tổng trị giá hóa đơn",
+    "declaration.invoice_no": "Số hóa đơn",
+    "declaration.invoice_date": "Ngày hóa đơn",
+    "declaration.declaration_no": "Số tờ khai",
+    "declaration.registered_at": "Ngày đăng ký",
+    "goods.hs_code": "Mã số hàng hóa",
+    "goods.description": "Mô tả hàng hóa",
+  };
+  return known[key] ?? key;
+}
+
+function TemplateCellPreview({ preview }: { preview: TemplatePreviewResponse }) {
+  const sheets = preview.sheets.map((sheet) => ({
+    ...sheet,
+    cells: Object.entries(preview.cells[sheet.name] ?? {}).sort((a, b) => {
+      const rowOf = (ref: string) => Number(/\d+/.exec(ref)?.[0] ?? 0);
+      const colOf = (ref: string) => columnIndex(ref.replace(/[^A-Za-z]/g, ""));
+      return rowOf(a[0]) - rowOf(b[0]) || colOf(a[0]) - colOf(b[0]);
+    }),
+  }));
+  const total = sheets.reduce((sum, sheet) => sum + sheet.cells.length, 0);
+  const withoutEvidence = sheets.reduce(
+    (sum, sheet) => sum + sheet.cells.filter(([, cell]) => !cell.evidence).length,
+    0,
+  );
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className={`${CARD} flex flex-wrap items-center gap-4 px-6 py-4`}>
+        <Stat label="Ô đã điền" value={String(total)} />
+        <Stat label="Ô thiếu nguồn" value={String(withoutEvidence)} />
+        <p className="type-caption text-ink-48">
+          Bảng dưới đây là đúng các ô mẫu <span className="type-caption-strong">{preview.version}</span> sẽ được
+          điền. Cột “Nguồn” cho biết giá trị lấy từ tệp nào.
+        </p>
+      </div>
+
+      {total === 0 ? (
+        <EmptyState
+          title="Chưa có dữ liệu tờ khai để điền"
+          description="Cần trích xuất Tờ khai hải quan trước khi xuất mẫu này. Hiện chưa có ô nào được điền."
+        />
+      ) : (
+        sheets
+          .filter((sheet) => sheet.cells.length > 0)
+          .map((sheet) => (
+            <section key={sheet.name} className={`${CARD} px-6 pb-2`}>
+              <div className="flex items-baseline justify-between gap-3 pt-4 pb-2">
+                <h3 className="type-body-strong text-ink">{sheet.name}</h3>
+                <span className="type-caption text-ink-48">{sheet.cells.length} ô</span>
+              </div>
+              <div className="[&_thead_th]:whitespace-nowrap [&_thead_th]:pr-6">
+              <Table
+                minWidth={820}
+                head={
+                  <>
+                    <TableHeadCell>Ô</TableHeadCell>
+                    <TableHeadCell>Trường dữ liệu</TableHeadCell>
+                    <TableHeadCell>Giá trị</TableHeadCell>
+                    <TableHeadCell>Nguồn</TableHeadCell>
+                    <TableHeadCell>Trạng thái</TableHeadCell>
+                  </>
+                }
+              >
+                  <tbody>
+                    {sheet.cells.map(([ref, cell]) => (
+                      <tr key={`${sheet.name}-${ref}`} className="border-t border-divider">
+                        <td className={`${CELL} type-fine-print w-16 whitespace-nowrap text-ink-48`}>{ref}</td>
+                        <td className={`${CELL} type-caption min-w-[160px] text-ink-80`}>
+                          {cell.evidence?.label_vi ?? fieldLabel(cell.field)}
+                        </td>
+                        <td className={`${CELL} type-body-strong text-ink`}>{valueOrDash(cell.value)}</td>
+                        <td className={`${CELL} type-caption text-ink-48`}>
+                          {cell.evidence ? (
+                            <span>
+                              {cell.evidence.filename}
+                              {cell.evidence.page ? ` · trang ${cell.evidence.page}` : ""}
+                              {cell.evidence.cell_ref ? ` · ${cell.evidence.cell_ref}` : ""}
+                            </span>
+                          ) : (
+                            <span className="text-warning">Không lưu nguồn</span>
+                          )}
+                        </td>
+                        <td className={CELL}>
+                          {cell.evidence ? (
+                            cell.evidence.review_status === "CONFIRMED" ? (
+                              <LocalizedStatus tone="green">Đã xác nhận</LocalizedStatus>
+                            ) : (
+                              <LocalizedStatus tone="red">Cần xem lại</LocalizedStatus>
+                            )
+                          ) : (
+                            <LocalizedStatus tone="red">Cần xem lại</LocalizedStatus>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+              </Table>
+              </div>
+            </section>
+          ))
+      )}
+    </div>
+  );
+}
+
 
 function DocumentPreview({ extraction }: { extraction: DocumentExtraction }) {
   const rows = useMemo<PreviewRow[]>(() => {
@@ -353,6 +470,13 @@ export default function ExportPage() {
   }, [templates, pickedVersion]);
 
   const selectedTemplate = templates.find((t) => t.version === selectedVersion) ?? null;
+  const isDeclarationTemplate = selectedTemplate?.version === "tokhai_import_v1";
+
+  const templatePreviewQuery = useQuery({
+    queryKey: ["template-preview", shipmentId, selectedVersion],
+    queryFn: () => api.templatePreview(shipmentId, selectedVersion),
+    enabled: Number.isFinite(shipmentId) && shipmentId > 0 && isDeclarationTemplate,
+  });
 
   const reviewCount = useMemo(
     () =>
@@ -394,13 +518,13 @@ export default function ExportPage() {
                 Lô hàng
               </Link>
               <span className="mx-2 text-ink-48">/</span>
-              <Link to={`/shipments/${shipmentId}/review`} className="text-action active:opacity-70">
+              <Link to={`/shipments/${shipmentId}/verify`} className="text-action active:opacity-70">
                 Lô #{shipmentId}
               </Link>
             </span>
           }
-          title="Xuất file Excel"
-          subtitle="Chọn mẫu, kiểm tra các giá trị sẽ được điền vào file rồi xuất. Giá trị quan trọng chưa xác nhận sẽ khiến file được đánh dấu DRAFT."
+          title="Xuất file theo mẫu"
+          subtitle="Kiểm tra các giá trị sẽ được điền vào mẫu rồi xuất. Giá trị quan trọng chưa xác nhận sẽ khiến file được đánh dấu DRAFT."
         />
 
         <section className={`${CARD} mb-6 p-6`}>
@@ -485,11 +609,24 @@ export default function ExportPage() {
         <section className="mb-12">
           <h2 className="type-lead text-ink">Xem trước dữ liệu xuất</h2>
           <p className="type-body mt-2 mb-5 max-w-[720px] text-ink-48">
-            Danh sách dưới đây là các giá trị then chốt sẽ được điền vào mẫu. Ô có nhãn “Cần xem lại” là
-            trường quan trọng chưa được xác nhận nguồn.
+            {isDeclarationTemplate
+              ? "Dưới đây là đúng các ô của mẫu Tờ khai sẽ được điền, kèm nguồn chứng cứ của từng giá trị."
+              : "Danh sách dưới đây là các giá trị then chốt sẽ được điền vào mẫu. Ô có nhãn “Cần xem lại” là trường quan trọng chưa được xác nhận nguồn."}
           </p>
 
-          {extractionsQuery.isPending ? (
+          {isDeclarationTemplate ? (
+            templatePreviewQuery.isPending ? (
+              <div className={`${CARD} flex items-center justify-center px-6 py-16`}>
+                <Spinner />
+              </div>
+            ) : templatePreviewQuery.isError ? (
+              <Callout tone="critical" title="Không tải được dữ liệu điền mẫu">
+                {templatePreviewQuery.error.message}
+              </Callout>
+            ) : templatePreviewQuery.data ? (
+              <TemplateCellPreview preview={templatePreviewQuery.data} />
+            ) : null
+          ) : extractionsQuery.isPending ? (
             <div className={`${CARD} flex items-center justify-center px-6 py-16`}>
               <Spinner />
             </div>

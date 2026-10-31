@@ -135,6 +135,42 @@ async def test_run_process_job_reports_failure(job_db, monkeypatch):
         assert job.error and "999" in job.error
 
 
+async def test_run_process_job_tracks_document_progress(job_db, monkeypatch):
+    from app.services import job_runner, pipeline
+
+    seen: list[tuple[int, str]] = []
+
+    async def fake_process(session, llm, document_id, force=False, on_stage=None):
+        await on_stage(document_id, "EXTRACTING")
+        seen.append((document_id, "EXTRACTING"))
+
+    monkeypatch.setattr(pipeline, "process_document", fake_process)
+    async with job_db() as session:
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": [11, 12]}, idempotency_key="p1"))
+
+    job_id = await worker.claim_job()
+    assert await job_runner.run_process_job(job_id, llm=None) is True
+    assert seen == [(11, "EXTRACTING"), (12, "EXTRACTING")]
+    async with job_db() as session:
+        job = await session.get(Job, job_id)
+        assert job.document_total == 2
+        assert job.document_done == 2
+        assert job.current_stage == "FINALIZING"
+
+
+async def test_progress_is_ignored_once_job_is_terminal(job_db):
+    from app.services import job_runner
+
+    async with job_db() as session:
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={}, idempotency_key="p2", status="DONE"))
+        job = (await session.execute(__import__("sqlalchemy").select(Job))).scalars().first()
+
+    await job_runner._update_progress(job.id, current_stage="EXTRACTING")
+    async with job_db() as session:
+        job = await session.get(Job, job.id)
+        assert job.current_stage is None
+
+
 async def test_finish_job_requeues_until_budget_then_fails(job_db):
     async with job_db() as session:
         session.add(Job(kind="PROCESS_DOCUMENTS", payload={"document_ids": []}, idempotency_key="drain"))

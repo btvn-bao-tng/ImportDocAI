@@ -1,0 +1,50 @@
+# ImportDoc AI — container build hygiene.
+# The build context is the repository root; docs, tests, virtualenvs and local data are excluded.
+
+# Version control and local tooling
+.git/
+.gitignore
+.kilo/
+.github/
+.vscode/
+.idea/
+
+# Python virtualenvs, caches, tests
+src/backend/.venv/
+src/backend/.pytest_cache/
+src/backend/tests/
+src/backend/e2e/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+
+# Frontend dependencies, build output and test tooling
+src/frontend/node_modules/
+src/frontend/dist/
+src/frontend/dist-ssr/
+src/frontend/e2e/
+src/frontend/playwright.config.ts
+src/frontend/playwright-report/
+src/frontend/test-results/
+src/frontend/blob-report/
+src/frontend/.oxlintrc.json
+src/frontend/README.md
+
+# Unit tests are not part of either image
+src/frontend/src/**/*.test.ts
+src/frontend/src/**/*.test.tsx
+src/frontend/src/test/
+
+# Local state, secrets and reference data
+data/
+exports/
+docs/
+*.log
+.env
+.env.*
+config.yml
+
+# Repo-root spreadsheets / scans
+/*.xlsx
+/*.xls
+/*.pdf

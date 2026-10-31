@@ -18,9 +18,12 @@ from ..services.export_excel import (
     DEFAULT_TEMPLATE_VERSION,
     FieldSource,
     ExportError,
+    VERIFY_TEMPLATE_VERSION,
     available_templates,
     load_mapping,
+    load_verify_mapping,
     write_export,
+    write_verify_export,
 )
 
 router = APIRouter(tags=["exports"])
@@ -219,12 +222,27 @@ async def create_export(
     shipment = await session.get(Shipment, shipment_id)
     if shipment is None:
         raise HTTPException(404, "Không tìm thấy shipment")
+
+    export_dir = settings.data_dir.parent.parent / "exports" / shipment.code
+
+    if body.template_version == VERIFY_TEMPLATE_VERSION:
+        preview = await verify_preview(shipment_id, session)
+        if not preview["rows"]:
+            raise HTTPException(422, "Lô hàng chưa có dữ liệu trích xuất để đối chiếu.")
+        try:
+            verify_outcome = write_verify_export(
+                shipment.code, preview["rows"], template_version=body.template_version, export_dir=export_dir
+            )
+        except ExportError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return await _save_export(
+            session, shipment, load_verify_mapping(), body.template_version, verify_outcome
+        )
+
     try:
         mapping, _ = load_mapping(body.template_version)
     except ExportError as exc:
         raise HTTPException(400, str(exc)) from exc
-
-    export_dir = settings.data_dir.parent.parent / "exports" / shipment.code
 
     if body.template_version == TOKHAI_TEMPLATE_VERSION:
         declaration_payload = await build_declaration_payload(session, shipment_id)
@@ -270,7 +288,9 @@ async def _save_export(session: AsyncSession, shipment: Shipment, mapping, templ
         message="; ".join(outcome.warnings) if outcome.warnings else None,
     )
     session.add(export)
-    shipment.status = "EXPORTED"
+    # A verify run is a read-only projection of the extraction, not a customs export.
+    if template_version != VERIFY_TEMPLATE_VERSION:
+        shipment.status = "EXPORTED"
     record_audit(
         session,
         "shipment",
@@ -287,6 +307,74 @@ async def _save_export(session: AsyncSession, shipment: Shipment, mapping, templ
         "warnings": outcome.warnings,
         "filename": outcome.output_path.name,
         "report_filename": outcome.report_path.name,
+    }
+
+
+@router.get("/shipments/{shipment_id}/verify-preview")
+async def verify_preview(shipment_id: int, session: AsyncSession = Depends(get_session)):
+    """One row per extracted field, grouped by document: the data behind the verify page."""
+    from ..services.fields import ALL_FIELD_SPECS
+
+    shipment = await session.get(Shipment, shipment_id)
+    if shipment is None:
+        raise HTTPException(404, "Không tìm thấy shipment")
+
+    docs = (
+        await session.execute(select(Document).where(Document.shipment_id == shipment_id).order_by(Document.id))
+    ).scalars().all()
+    documents = []
+    rows: list[dict] = []
+    for doc in docs:
+        fields = (
+            await session.execute(
+                select(ExtractedField).where(ExtractedField.document_id == doc.id).order_by(ExtractedField.id)
+            )
+        ).scalars().all()
+        doc_rows = []
+        for f in fields:
+            spec = ALL_FIELD_SPECS.get(f.field_key)
+            doc_rows.append(
+                {
+                    "field_key": f.field_key,
+                    "label_vi": spec.label_vi if spec else f.field_key,
+                    "value": f.normalized_value if f.normalized_value is not None else f.raw_value,
+                    "unit": f.unit,
+                    "page": f.page,
+                    "cell_ref": f.cell_ref,
+                    "bbox": f.bbox,
+                    "provenance_type": f.provenance_type,
+                    "review_status": f.review_status,
+                    "critical": f.critical,
+                }
+            )
+            rows.append(
+                {
+                    **doc_rows[-1],
+                    "filename": doc.filename,
+                    "doc_type": doc.doc_type,
+                    "provenance": (f.provenance_type or "").replace("_", " ").title(),
+                }
+            )
+        documents.append(
+            {
+                "id": doc.id,
+                "filename": doc.filename,
+                "doc_type": doc.doc_type,
+                "status": doc.status,
+                "error": doc.error,
+                "page_count": doc.page_count,
+                "has_text_layer": doc.has_text_layer,
+                "fields": doc_rows,
+            }
+        )
+
+    critical_open = sum(1 for r in rows if r["critical"] and r["review_status"] != "CONFIRMED")
+    return {
+        "shipment": {"id": shipment.id, "code": shipment.code, "status": shipment.status},
+        "documents": documents,
+        "field_count": len(rows),
+        "critical_open": critical_open,
+        "rows": rows,
     }
 
 

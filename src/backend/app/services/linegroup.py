@@ -26,11 +26,6 @@ class LogicalLine:
             "line.unit": self.unit,
             "line.unit_price": self.unit_price,
             "line.amount": self.amount,
-            "line.description": self.description,
-            "line.quantity": self.quantity,
-            "line.unit": self.unit,
-            "line.unit_price": self.unit_price,
-            "line.amount": self.amount,
             "line.components": " | ".join(
                 f"{c.get('spec') or ''} {c.get('quantity') or ''} {c.get('amount') or ''}".strip()
                 for c in self.components

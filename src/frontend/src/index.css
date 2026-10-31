@@ -31,6 +31,7 @@
   --radius-sm: 8px;
   --radius-md: 11px;
   --radius-lg: 18px;
+  --radius-pill: 9999px;
 
   /* Type scale tokens */
   --text-hero-display: 56px;

@@ -16,7 +16,7 @@ critical mapped field to be present and reviewed.
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -64,6 +64,9 @@ class DeclarationPayload:
     sources: dict[str, FieldSource]
     review_status: str = "UNREVIEWED"
     goods_reviewed: bool = False
+    licenses: list[dict[str, str | None]] = field(default_factory=list)
+    instructions: list[dict[str, str | None]] = field(default_factory=list)
+    adjustments: list[dict[str, str | None]] = field(default_factory=list)
 
     def unreviewed_critical(self) -> list[str]:
         """Critical fields that exist but no human has confirmed.
@@ -79,6 +82,8 @@ class DeclarationPayload:
         if self.goods and not self.goods_reviewed:
             for idx, line in enumerate(self.goods, start=1):
                 for key, value in line.items():
+                    if key == "taxes":
+                        continue
                     if value not in (None, "") and is_critical(key):
                         unreviewed.append(f"goods[{idx}].{key}")
         return unreviewed
@@ -90,6 +95,8 @@ class DeclarationPayload:
                 missing.append(key)
         for idx, line in enumerate(self.goods, start=1):
             for key, value in line.items():
+                if key == "taxes":
+                    continue
                 if value in (None, "") and is_critical(key):
                     missing.append(f"goods[{idx}].{key}")
         return missing
@@ -176,15 +183,17 @@ def _block_refs(columns: dict[str, Any], block_start: int, first_start: int) -> 
 
 
 def _pages_used(goods_count: int, blocks: list[int], per_block: int) -> int:
-    """Page 1 is the header; each used goods block adds one continuation page.
+    """Page 1 is the header, page 2 the fixed continuation sheet (ghi chú / chỉ thị /
+    trưởng đơn vị); each used goods block adds one more page.
 
-    The reference declaration prints "1/4..4/4" for two goods lines, i.e. pages =
-    1 header + one page per used block, capped by the number of blocks in the template.
+    The reference declarations print "1/4..4/4" for two goods lines, i.e. pages =
+    2 fixed pages + one page per used block, capped by the number of blocks in the
+    template.
     """
     if goods_count <= 0:
-        return 1
+        return 2
     needed = -(-goods_count // max(per_block, 1))
-    return 1 + min(needed, len(blocks))
+    return 2 + min(needed, len(blocks))
 
 
 def _set_page_counter(ws, cell_ref: str, page: int, total: int) -> None:
@@ -269,7 +278,13 @@ def write_tokhai_export(
             _set_page_counter(tkn, frame["counter_cell"], int(frame["page"]), page_total)
 
     start_row = int(tax_rows.get("start_row") or 68)
-    for i in range(int(tax_rows.get("capacity") or 0)):
+    tax_capacity = int(tax_rows.get("capacity") or 0)
+    if len(payload.taxes) > tax_capacity:
+        warnings.append(
+            f"Tờ khai có {len(payload.taxes)} dòng thuế khai tổng nhưng template chỉ chứa "
+            f"{tax_capacity} dòng — phần vượt bị bỏ qua"
+        )
+    for i in range(tax_capacity):
         row = start_row + i
         tax = payload.taxes[i] if i < len(payload.taxes) else {}
         for letter, col in (tax_rows.get("columns") or {}).items():
@@ -292,6 +307,71 @@ def write_tokhai_export(
                 key = col["field"]
                 write(tkn, "TKN", ref, key, goods.get(key), required=bool(col.get("critical")))
 
+    # --- goods tax slots ("Thuế và thu khác" inside each goods block) ---------------
+    tax_slot_map = tkn_map.get("goods_tax_slots") or {}
+    tax_slot_starts = [int(s) for s in (tax_slot_map.get("slot_starts") or [])]
+    if tax_slot_starts:
+        first_tax_start = tax_slot_starts[0]
+        for block_idx, block_start in enumerate(block_starts):
+            line_idx = block_idx * per_block
+            goods = payload.goods[line_idx] if line_idx < len(payload.goods) else None
+            goods_taxes = (goods or {}).get("taxes") or []
+            if len(goods_taxes) > len(tax_slot_starts):
+                warnings.append(
+                    f"Dòng hàng {line_idx + 1} có {len(goods_taxes)} khoản thuế nhưng template chỉ chứa "
+                    f"{len(tax_slot_starts)} slot — phần vượt bị bỏ qua"
+                )
+            block_offset = block_start - first_start
+            for slot_idx, slot_start in enumerate(tax_slot_starts):
+                refs = _block_refs(tax_slot_map.get("columns") or {}, slot_start + block_offset, first_tax_start)
+                tax = goods_taxes[slot_idx] if slot_idx < len(goods_taxes) else {}
+                for ref, col in refs.items():
+                    key = col["field"]
+                    write(tkn, "TKN", ref, key, tax.get(key), required=False)
+
+    # --- import licenses ("Giấy phép nhập khẩu", 5 slots) ----------------------------
+    license_slots = tkn_map.get("license_slots") or {}
+    license_slot_rows = license_slots.get("slots") or []
+    if len(payload.licenses) > len(license_slot_rows):
+        warnings.append(
+            f"Hồ sơ có {len(payload.licenses)} giấy phép nhập khẩu nhưng template chỉ chứa "
+            f"{len(license_slot_rows)} slot — phần vượt bị bỏ qua"
+        )
+    for idx, lic in enumerate(payload.licenses[: len(license_slot_rows)]):
+        slot = license_slot_rows[idx]
+        write(tkn, "TKN", slot["code"], "license.code", lic.get("license.code"), required=False)
+        write(tkn, "TKN", slot["number"], "license.number", lic.get("license.number"), required=False)
+
+    # --- valuation adjustments ("Các khoản điều chỉnh", 5 rows) ----------------------
+    adj_rows = tkn_map.get("adjustment_rows") or {}
+    adj_start = int(adj_rows.get("start_row") or 58)
+    adj_capacity = int(adj_rows.get("capacity") or 0)
+    if len(payload.adjustments) > adj_capacity:
+        warnings.append(
+            f"Hồ sơ có {len(payload.adjustments)} khoản điều chỉnh nhưng template chỉ chứa "
+            f"{adj_capacity} dòng — phần vượt bị bỏ qua"
+        )
+    for i in range(adj_capacity):
+        adj = payload.adjustments[i] if i < len(payload.adjustments) else {}
+        for letter, col in (adj_rows.get("columns") or {}).items():
+            write(tkn, "TKN", f"{letter}{adj_start + i}", col["field"], adj.get(col["field"]), required=False)
+
+    # --- customs instructions ("Phân loại chỉ thị của Hải quan", 10 rows, stride 3) -
+    ins_rows = tkn_map.get("instruction_rows") or {}
+    ins_start = int(ins_rows.get("start_row") or 90)
+    ins_stride = int(ins_rows.get("row_stride") or 1)
+    ins_capacity = int(ins_rows.get("capacity") or 0)
+    if len(payload.instructions) > ins_capacity:
+        warnings.append(
+            f"Hồ sơ có {len(payload.instructions)} chỉ thị hải quan nhưng template chỉ chứa "
+            f"{ins_capacity} dòng — phần vượt bị bỏ qua"
+        )
+    for i in range(ins_capacity):
+        ins = payload.instructions[i] if i < len(payload.instructions) else {}
+        row = ins_start + i * ins_stride
+        for letter, col in (ins_rows.get("columns") or {}).items():
+            write(tkn, "TKN", f"{letter}{row}", col["field"], ins.get(col["field"]), required=False)
+
     # --- HANG mirror ---------------------------------------------------------------
     if "HANG" in wb.sheetnames:
         hang = wb["HANG"]
@@ -313,7 +393,9 @@ def write_tokhai_export(
                     required=False,
                 )
 
-    no_goods = not [g for g in payload.goods if any(v not in (None, "") for v in g.values())]
+    no_goods = not [
+        g for g in payload.goods if any(k != "taxes" and v not in (None, "") for k, v in g.items())
+    ]
     if no_goods:
         warnings.append("Tờ khai không có dòng hàng — không thể xuất FINAL")
     unresolved = payload.critical_missing()
@@ -428,6 +510,61 @@ def verify_tokhai_round_trip(path: Path, mapping: dict[str, Any], payload: Decla
             if _norm_empty(wb["TKN"][f"{letter}{row}"].value) != _norm_empty(expected):
                 problems.append(f"Round-trip lệch TKN!{letter}{row} ({col['field']})")
 
+    # license slots
+    license_slots = tkn_map.get("license_slots") or {}
+    license_slot_rows = license_slots.get("slots") or []
+    for idx, lic in enumerate(payload.licenses[: len(license_slot_rows)]):
+        for slot_key, field_key in (("code", "license.code"), ("number", "license.number")):
+            expected = lic.get(field_key)
+            if expected in (None, ""):
+                continue
+            ref = license_slot_rows[idx][slot_key]
+            if _norm_empty(wb["TKN"][ref].value) != _norm_empty(expected):
+                problems.append(f"Round-trip lệch TKN!{ref} ({field_key})")
+
+    # adjustment rows
+    adj_rows = tkn_map.get("adjustment_rows") or {}
+    adj_start = int(adj_rows.get("start_row") or 58)
+    for i, adj in enumerate(payload.adjustments[: int(adj_rows.get("capacity") or 0)]):
+        for letter, col in (adj_rows.get("columns") or {}).items():
+            expected = adj.get(col["field"])
+            if expected in (None, ""):
+                continue
+            if _norm_empty(wb["TKN"][f"{letter}{adj_start + i}"].value) != _norm_empty(expected):
+                problems.append(f"Round-trip lệch TKN!{letter}{adj_start + i} ({col['field']})")
+
+    # instruction rows
+    ins_rows = tkn_map.get("instruction_rows") or {}
+    ins_start = int(ins_rows.get("start_row") or 90)
+    ins_stride = int(ins_rows.get("row_stride") or 1)
+    for i, ins in enumerate(payload.instructions[: int(ins_rows.get("capacity") or 0)]):
+        for letter, col in (ins_rows.get("columns") or {}).items():
+            expected = ins.get(col["field"])
+            if expected in (None, ""):
+                continue
+            if _norm_empty(wb["TKN"][f"{letter}{ins_start + i * ins_stride}"].value) != _norm_empty(expected):
+                problems.append(f"Round-trip lệch TKN!{letter}{ins_start + i * ins_stride} ({col['field']})")
+
+    # goods tax slots
+    tax_slot_map = tkn_map.get("goods_tax_slots") or {}
+    tax_slot_starts = [int(s) for s in (tax_slot_map.get("slot_starts") or [])]
+    if tax_slot_starts:
+        first_tax_start = tax_slot_starts[0]
+        for block_idx, block_start in enumerate(blocks):
+            line_idx = block_idx * per_block
+            goods = payload.goods[line_idx] if line_idx < len(payload.goods) else None
+            goods_taxes = (goods or {}).get("taxes") or []
+            block_offset = block_start - blocks[0]
+            for slot_idx, slot_start in enumerate(tax_slot_starts):
+                refs = _block_refs(tax_slot_map.get("columns") or {}, slot_start + block_offset, first_tax_start)
+                tax = goods_taxes[slot_idx] if slot_idx < len(goods_taxes) else {}
+                for ref, col in refs.items():
+                    expected = tax.get(col["field"])
+                    if expected in (None, ""):
+                        continue
+                    if _norm_empty(wb["TKN"][ref].value) != _norm_empty(expected):
+                        problems.append(f"Round-trip lệch TKN!{ref} ({col['field']})")
+
     # HANG mirror cells that the exporter owns
     hang_blocks = (mapping["sheets"].get("HANG") or {}).get("line_blocks") or {}
     if hang_blocks.get("verified_data_cells") and "HANG" in wb.sheetnames:
@@ -482,6 +619,34 @@ def owned_cells(mapping: dict[str, Any], sheet: str) -> set[str]:
             for ref in (lb.get("columns") or {}):
                 letter, row = split_ref(ref)
                 owned.add(f"{letter}{row + offset}")
+    gts = sm.get("goods_tax_slots")
+    if gts:
+        starts = [int(b) for b in (lb.get("block_starts") or [])] if lb else []
+        slot_starts = [int(s) for s in (gts.get("slot_starts") or [])]
+        for start in starts:
+            block_offset = start - starts[0]
+            for slot_start in slot_starts:
+                offset = slot_start + block_offset - slot_starts[0]
+                for ref in (gts.get("columns") or {}):
+                    letter, row = split_ref(ref)
+                    owned.add(f"{letter}{row + offset}")
+    ls = sm.get("license_slots")
+    if ls:
+        for slot in (ls.get("slots") or []):
+            owned.add(slot["code"])
+            owned.add(slot["number"])
+        owned.update(ls.get("extra_owned_cells") or [])
+    ar = sm.get("adjustment_rows")
+    if ar:
+        for i in range(int(ar.get("capacity") or 0)):
+            for letter in (ar.get("columns") or {}):
+                owned.add(f"{letter}{int(ar['start_row']) + i}")
+    ir = sm.get("instruction_rows")
+    if ir:
+        stride = int(ir.get("row_stride") or 1)
+        for i in range(int(ir.get("capacity") or 0)):
+            for letter in (ir.get("columns") or {}):
+                owned.add(f"{letter}{int(ir['start_row']) + i * stride}")
     if sheet == "TKN":
         for frame in sm.get("page_frames") or []:
             owned.add(frame["counter_cell"])
