@@ -23,7 +23,9 @@
 
   /* Localized status guardrails — pills/alerts only, never buttons or fills */
   --color-critical: #b3261e;
+  --color-critical-line: #f1ccc8;
   --color-warning: #8a6100;
+  --color-warning-line: #efdfba;
   --color-success: #166b3c;
 
   /* Radii — no other radii allowed */

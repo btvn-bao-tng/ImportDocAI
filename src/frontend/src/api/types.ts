@@ -190,3 +190,42 @@ export interface ExportSummary {
   filename: string | null;
   warnings: string[];
 }
+
+export interface ConsistencyValue {
+  field_id: number;
+  document_id: number;
+  filename: string;
+  doc_type: string | null;
+  page: number | null;
+  bbox: number[] | null;
+  cell_ref: string | null;
+  field_key: string;
+  value: string | null;
+}
+
+export interface ConsistencyFinding {
+  id: number;
+  severity: "ERROR" | "WARNING";
+  category: string;
+  title: string;
+  explanation: string;
+  dismissed: boolean;
+  dismiss_note: string | null;
+  values: ConsistencyValue[];
+}
+
+export interface ConsistencyRunInfo {
+  id: number;
+  status: "DONE" | "FAILED";
+  error: string | null;
+  finding_count: number;
+  created_at: string | null;
+}
+
+export interface ConsistencyReport {
+  run: ConsistencyRunInfo | null;
+  /** Documents or values changed since the last run: findings may be out of date. */
+  stale: boolean;
+  findings: ConsistencyFinding[];
+  counts: { error: number; warning: number };
+}

@@ -303,3 +303,67 @@ async def test_parallel_limit_reads_environment(monkeypatch):
     assert job_runner.parallel_limit() == job_runner.DEFAULT_PARALLEL_DOCUMENTS
     monkeypatch.setenv("MAX_PARALLEL_DOCUMENTS", "0")
     assert job_runner.parallel_limit() == 1
+
+
+async def test_consistency_failure_does_not_fail_job(job_db, monkeypatch):
+    """The cross-document check only warns: its crash must not fail the processing job."""
+    from types import SimpleNamespace
+
+    from app.models import Shipment
+    from app.services import consistency, job_runner, resolution
+
+    async with job_db() as session:
+        shipment = Shipment(code="CC1")
+        session.add(shipment)
+        await session.flush()
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"shipment_id": shipment.id, "document_ids": []}, idempotency_key="cc1"))
+
+    async def fake_resolve(*args, **kwargs):
+        return SimpleNamespace(stale=False, message="")
+
+    called: list[int] = []
+
+    async def boom(session, llm, shipment_id, force=False):
+        called.append(shipment_id)
+        raise RuntimeError("consistency exploded")
+
+    monkeypatch.setattr(resolution, "resolve_shipment", fake_resolve)
+    monkeypatch.setattr(consistency, "run_consistency_check", boom)
+
+    job_id = await worker.claim_job()
+    assert await job_runner.run_process_job(job_id, llm=None) is True
+    assert called, "consistency check was not invoked"
+    async with job_db() as session:
+        job = await session.get(Job, job_id)
+        assert not job.error
+
+
+async def test_consistency_failure_keeps_resolution_writes(job_db, monkeypatch):
+    """Review: rolling back after a consistency crash discarded uncommitted resolution work."""
+    from types import SimpleNamespace
+
+    from app.models import AuditEvent, Shipment
+    from app.services import consistency, job_runner, resolution
+    from sqlalchemy import select
+
+    async with job_db() as session:
+        shipment = Shipment(code="CC2")
+        session.add(shipment)
+        await session.flush()
+        session.add(Job(kind="PROCESS_DOCUMENTS", payload={"shipment_id": shipment.id, "document_ids": []}, idempotency_key="cc2"))
+
+    async def writing_resolve(session, *args, **kwargs):
+        session.add(AuditEvent(entity="resolution-marker", entity_id="1", action="WROTE"))
+        return SimpleNamespace(stale=False, message="")
+
+    async def boom(session, llm, shipment_id, force=False):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(resolution, "resolve_shipment", writing_resolve)
+    monkeypatch.setattr(consistency, "run_consistency_check", boom)
+
+    job_id = await worker.claim_job()
+    assert await job_runner.run_process_job(job_id, llm=None) is True
+    async with job_db() as session:
+        rows = (await session.execute(select(AuditEvent).where(AuditEvent.entity == "resolution-marker"))).scalars().all()
+        assert len(rows) == 1

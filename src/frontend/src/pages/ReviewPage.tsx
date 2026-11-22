@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { DocumentExtraction, FieldRow, GridSheet, TemplateCell } from "../api/types";
 import { DocumentSource } from "../components/DocumentViewer";
+import ConsistencyPanel from "../components/ConsistencyPanel";
+import type { ConsistencyValue } from "../api/types";
 import {
   Button,
   Callout,
@@ -607,7 +609,7 @@ export default function ReviewPage() {
   const [evidenceField, setEvidenceField] = useState<string | null>(null);
   const [evidenceNotice, setEvidenceNotice] = useState<string | null>(null);
   const [maximizedPanel, setMaximizedPanel] = useState<"source" | "right" | null>(null);
-  const [rightPane, setRightPane] = useState<"extraction" | "template">("extraction");
+  const [rightPane, setRightPane] = useState<"extraction" | "template" | "consistency">("extraction");
   const splitRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
 
@@ -695,6 +697,24 @@ export default function ReviewPage() {
       bbox: ev.bbox,
       cellRef: ev.cell_ref,
       label: ev.label_vi,
+    });
+  }
+
+  function handleConsistencyValueClick(value: ConsistencyValue) {
+    setEvidenceField(value.field_key);
+    if (!documents.some((d) => d.document.id === value.document_id)) {
+      setEvidence(null);
+      setEvidenceNotice(`Giá trị “${value.value ?? ""}” nằm ở tệp không còn trong lô hàng.`);
+      return;
+    }
+    setEvidenceNotice(null);
+    setActiveDocId(value.document_id);
+    setEvidence({
+      documentId: value.document_id,
+      page: value.page,
+      bbox: value.bbox,
+      cellRef: value.cell_ref,
+      label: value.field_key,
     });
   }
 
@@ -838,6 +858,7 @@ export default function ReviewPage() {
                     [
                       { key: "extraction", label: "Giá trị trích xuất" },
                       { key: "template", label: "Mẫu tờ khai cuối" },
+                      { key: "consistency", label: "Kiểm tra chéo" },
                     ] as const
                   ).map((pane) => (
                     <button
@@ -993,7 +1014,9 @@ export default function ReviewPage() {
               }`}
             >
               <div className={maximizedPanel === "right" ? "h-[75vh] min-h-0 lg:h-full" : "h-[70vh] min-h-0 lg:h-full"}>
-                {rightPane === "template" ? (
+                {rightPane === "consistency" ? (
+                  <ConsistencyPanel shipmentId={shipmentId} onValueClick={handleConsistencyValueClick} />
+                ) : rightPane === "template" ? (
                   <TemplateViewer
                     shipmentId={shipmentId}
                     version={templateVersion}

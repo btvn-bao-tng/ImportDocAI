@@ -116,4 +116,14 @@ describe("ProcessingPage", () => {
     expect(within(packingRow).queryByText(/Trích xuất|Phân loại/)).toBeNull();
     expect(await screen.findByText("Đã xử lý 3/3 chứng từ")).toBeTruthy();
   });
+
+  it("refreshes the cross-check results when the job finishes", async () => {
+    const spy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    renderPage({
+      shipment_status: "NEEDS_REVIEW",
+      job: { id: 1, status: "DONE", attempts: 1, error: null, progress: progress() },
+    });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ["consistency", 1] }));
+    spy.mockRestore();
+  });
 });

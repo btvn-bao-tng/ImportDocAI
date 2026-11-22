@@ -13,6 +13,7 @@ vi.mock("../api/client", () => ({
     getExtractions: vi.fn(),
     templatePreview: vi.fn(),
     createExport: vi.fn(),
+    getConsistency: vi.fn(),
     exportDownloadUrl: vi.fn((id: number) => `/api/v1/exports/${id}/download`),
     exportReportUrl: vi.fn((id: number) => `/api/v1/exports/${id}/report`),
   },
@@ -125,6 +126,7 @@ describe("ExportPage", () => {
       },
     ]);
     listExports.mockResolvedValue([]);
+    vi.mocked(api.getConsistency).mockResolvedValue({ run: null, stale: false, findings: [], counts: { error: 0, warning: 0 } });
     getExtractions.mockResolvedValue(extractions);
     templatePreview.mockResolvedValue({
       version: "tokhai_import_v1",
@@ -238,5 +240,19 @@ describe("ExportPage", () => {
     expect(screen.getByText(/ToKhaiHQ7N_QDTQ_108299395961 THONG QUAN\.xlsx/)).toBeTruthy();
     // The U&I-only transport rows must not appear for the declaration template.
     expect(screen.queryByText("Thể tích (CBM)")).toBeNull();
+  });
+
+  it("warns about unresolved cross-check findings but keeps export enabled", async () => {
+    vi.mocked(api.getConsistency).mockResolvedValue({
+      run: { id: 1, status: "DONE", error: null, finding_count: 1, created_at: "2026-11-23T08:00:00Z" },
+      stale: false,
+      findings: [],
+      counts: { error: 1, warning: 0 },
+    });
+    renderPage();
+    expect(await screen.findByText(/Còn 1 lỗi kiểm tra chéo và 0 cảnh báo/)).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Tạo file Excel" }) as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 });

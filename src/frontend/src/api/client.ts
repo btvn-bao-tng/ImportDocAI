@@ -1,4 +1,5 @@
 import type {
+  ConsistencyReport,
   DocumentSummary,
   ExportSummary,
   ExtractionsResponse,
@@ -66,6 +67,14 @@ export const api = {
   getExtractions: (shipmentId: number) => request<ExtractionsResponse>(`/shipments/${shipmentId}/extractions`),
   verifyPreview: (shipmentId: number) =>
     request<VerifyPreviewResponse>(`/shipments/${shipmentId}/verify-preview`),
+  getConsistency: (shipmentId: number) => request<ConsistencyReport>(`/shipments/${shipmentId}/consistency`),
+  runConsistency: (shipmentId: number) =>
+    request<ConsistencyReport>(`/shipments/${shipmentId}/consistency/run`, { method: "POST" }),
+  dismissFinding: (findingId: number, note?: string) =>
+    request<ConsistencyReport>(`/consistency-findings/${findingId}/dismiss`, {
+      method: "POST",
+      body: JSON.stringify({ note: note ?? null }),
+    }),
   getParties: (shipmentId: number) => request<PartyRow[]>(`/shipments/${shipmentId}/parties`),
   patchField: (shipmentId: number, fieldId: number, value: string, reason?: string) =>
     request<FieldRow>(`/shipments/${shipmentId}/fields/${fieldId}`, {

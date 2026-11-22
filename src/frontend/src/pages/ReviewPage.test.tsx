@@ -14,6 +14,9 @@ vi.mock("../api/client", () => ({
     templatePreview: vi.fn(),
     templateFileUrl: vi.fn((version: string) => `/api/v1/templates/${version}/file`),
     documentGrid: vi.fn(),
+    getConsistency: vi.fn(),
+    runConsistency: vi.fn(),
+    dismissFinding: vi.fn(),
     documentFileUrl: vi.fn((id: number) => `/api/v1/documents/${id}/file`),
   },
 }));
@@ -269,6 +272,19 @@ describe("ReviewPage", () => {
 
     expect(await screen.findByText("A1")).toBeTruthy();
     expect(documentGrid).toHaveBeenCalledWith(11);
+  });
+
+  it("switches to the cross-check pane", async () => {
+    vi.mocked(api.getConsistency).mockResolvedValue({
+      run: { id: 1, status: "DONE", error: null, finding_count: 0, created_at: "2026-11-23T08:00:00Z" },
+      stale: false,
+      findings: [],
+      counts: { error: 0, warning: 0 },
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Kiểm tra chéo" }));
+    expect(await screen.findByText("Không phát hiện thông tin lệch giữa các chứng từ")).toBeTruthy();
+    expect(api.getConsistency).toHaveBeenCalledWith(1);
   });
 });
 

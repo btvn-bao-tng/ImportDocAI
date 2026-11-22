@@ -502,3 +502,37 @@ class Job(Base):
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ConsistencyRun(Base):
+    """One cross-document consistency check of a shipment (LLM-assisted, warning only)."""
+
+    __tablename__ = "consistency_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shipment_id: Mapped[int] = mapped_column(ForeignKey("shipments.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    error: Mapped[str | None] = mapped_column(Text)
+    finding_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ConsistencyFinding(Base):
+    __tablename__ = "consistency_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("consistency_runs.id"))
+    shipment_id: Mapped[int] = mapped_column(ForeignKey("shipments.id"), index=True)
+    severity: Mapped[str] = mapped_column(String(16))
+    category: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(512))
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    field_ids: Mapped[Any] = mapped_column(JSON)
+    # [[document_id, field_key, line_seq], ...]: survives re-extraction (new field ids),
+    # so a dismissal follows the content rather than the row ids.
+    signature: Mapped[Any | None] = mapped_column(JSON)
+    dismissed: Mapped[bool] = mapped_column(default=False)
+    dismiss_note: Mapped[str | None] = mapped_column(Text)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

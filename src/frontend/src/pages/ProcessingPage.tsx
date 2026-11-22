@@ -157,6 +157,7 @@ export default function ProcessingPage() {
     void queryClient.invalidateQueries({ queryKey: ["extractions", shipmentId] });
     void queryClient.invalidateQueries({ queryKey: ["shipment", shipmentId] });
     void queryClient.invalidateQueries({ queryKey: ["template-preview", shipmentId] });
+    void queryClient.invalidateQueries({ queryKey: ["consistency", shipmentId] });
     navigate(`/shipments/${shipmentId}/review`, { replace: true });
   }, [job?.status, shipmentId, navigate, queryClient]);
 

@@ -227,6 +227,18 @@ async def run_process_job(job_id: int, llm: LLMClient) -> bool:
                 log.exception("resolution failed for shipment %s", shipment_id)
                 await session.rollback()
                 resolution_error = f"RESOLUTION_FAILED: {exc}"
+            # Commit resolution first: the consistency check below may roll back on
+            # failure, and that rollback must never discard resolved values.
+            await session.commit()
+            try:
+                # Cross-document check only warns. Its failure is logged and stored on
+                # its own run row, never added to job.error or allowed to fail the job.
+                from . import consistency
+
+                await consistency.run_consistency_check(session, llm, shipment_id)
+            except Exception:
+                log.exception("consistency check failed for shipment %s", shipment_id)
+                await session.rollback()
             await refresh_shipment_status(session, shipment_id)
         job = await session.get(Job, job_id)
         if job is not None:

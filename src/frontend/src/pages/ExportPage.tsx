@@ -447,6 +447,13 @@ export default function ExportPage() {
     enabled: Number.isFinite(shipmentId) && shipmentId > 0,
   });
 
+  const consistencyQuery = useQuery({
+    queryKey: ["consistency", shipmentId],
+    queryFn: () => api.getConsistency(shipmentId),
+    enabled: Number.isFinite(shipmentId) && shipmentId > 0,
+  });
+  const consistencyCounts = consistencyQuery.data?.counts ?? { error: 0, warning: 0 };
+
   const templatesData = templatesQuery.data;
   const templates = useMemo<TemplateRow[]>(() => templatesData ?? [], [templatesData]);
 
@@ -581,6 +588,16 @@ export default function ExportPage() {
           ) : templatesQuery.isPending ? (
             <div className="mt-4">
               <Spinner />
+            </div>
+          ) : null}
+
+          {consistencyCounts.error + consistencyCounts.warning > 0 ? (
+            <div className="mt-5">
+              <Callout tone="warning" title="Chứng từ chưa đồng nhất">
+                Còn {consistencyCounts.error} lỗi kiểm tra chéo và {consistencyCounts.warning} cảnh báo giữa các
+                chứng từ. Vẫn có thể xuất file.{" "}
+                <Link to={`/shipments/${shipmentId}/review`}>Xem chi tiết ở bước Review</Link>
+              </Callout>
             </div>
           ) : null}
 
